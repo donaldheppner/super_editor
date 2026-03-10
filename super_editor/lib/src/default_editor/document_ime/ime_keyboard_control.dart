@@ -58,7 +58,7 @@ class _SoftwareKeyboardOpenerState extends State<SoftwareKeyboardOpener> impleme
     // ancestor widgets can still call `close()` on the keyboard in
     // their `dispose()` methods. If we `detach()` right now, the
     // ancestor widgets would cause errors in their `dispose()` methods.
-    WidgetsBinding.instance.scheduleFrameCallback((timeStamp) {
+    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
       // Check that we're still the delegate at the end of the frame, because
       // some other widget may have replaced us as the delegate.
       if (widget.controller?._delegate == this) {

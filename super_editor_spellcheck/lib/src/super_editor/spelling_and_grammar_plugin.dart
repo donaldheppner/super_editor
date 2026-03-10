@@ -136,14 +136,14 @@ class SpellingAndGrammarPlugin extends SuperEditorPlugin {
 
   late final List<SpellingIgnoreRule> _ignoreRules;
 
-  late SpellingAndGrammarReaction _reaction;
+  SpellingAndGrammarReaction? _reaction;
 
   /// Whether this reaction checks spelling in the document.
   bool get isSpellCheckEnabled => _isSpellCheckEnabled;
   bool _isSpellCheckEnabled;
   set isSpellCheckEnabled(bool isEnabled) {
     _isSpellCheckEnabled = isEnabled;
-    _reaction.isSpellCheckEnabled = isEnabled;
+    _reaction?.isSpellCheckEnabled = isEnabled;
   }
 
   /// The [UnderlineStyle] applied to words of text that are mis-spelled.
@@ -154,7 +154,7 @@ class SpellingAndGrammarPlugin extends SuperEditorPlugin {
   bool _isGrammarCheckEnabled;
   set isGrammarCheckEnabled(bool isEnabled) {
     _isGrammarCheckEnabled = isEnabled;
-    _reaction.isGrammarCheckEnabled = isEnabled;
+    _reaction?.isGrammarCheckEnabled = isEnabled;
   }
 
   /// The [UnderlineStyle] applied to runs of text with incorrect grammar.
@@ -190,6 +190,11 @@ class SpellingAndGrammarPlugin extends SuperEditorPlugin {
     editor.context.put(spellingErrorSuggestionsKey, _spellingErrorSuggestions);
     _contentTapHandler?.editor = editor;
 
+    if (_spellCheckService == null && _grammarCheckService == null) {
+      // No spell or grammar check services available on this platform.
+      return;
+    }
+
     _reaction = SpellingAndGrammarReaction(
       _spellingErrorSuggestions,
       _styler,
@@ -199,18 +204,20 @@ class SpellingAndGrammarPlugin extends SuperEditorPlugin {
       spellCheckDelayAfterEdit: _spellCheckDelayAfterEdit,
       clock: _clock,
     );
-    editor.reactionPipeline.add(_reaction);
+    editor.reactionPipeline.add(_reaction!);
 
     // Do initial spelling and grammar analysis, in case the document already
     // contains some content.
-    _reaction.analyzeWholeDocument(editor.context);
+    _reaction!.analyzeWholeDocument(editor.context);
   }
 
   @override
   void detach(Editor editor) {
     _styler.clearAllErrors();
-    editor.reactionPipeline.remove(_reaction);
-    _reaction.dispose();
+    if (_reaction != null) {
+      editor.reactionPipeline.remove(_reaction!);
+      _reaction!.dispose();
+    }
     _contentTapHandler?.editor = null;
 
     editor.context.remove(spellingErrorSuggestionsKey, _spellingErrorSuggestions);
