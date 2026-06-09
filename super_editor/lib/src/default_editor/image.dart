@@ -49,7 +49,9 @@ class ImageNode extends BlockNode {
       throw Exception('ImageNode can only copy content from a UpstreamDownstreamNodeSelection.');
     }
 
-    return !selection.isCollapsed ? imageUrl : null;
+    // Copy images as Markdown (`![alt](url)`) rather than a bare URL so that pasting
+    // round-trips back into a rendered image instead of plain link text (NOTE-18).
+    return !selection.isCollapsed ? '![$altText]($imageUrl)' : null;
   }
 
   @override
