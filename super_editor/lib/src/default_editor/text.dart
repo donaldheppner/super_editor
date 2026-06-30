@@ -1283,6 +1283,16 @@ class TextComponentState extends State<TextComponent> with DocumentComponent imp
   Widget build(BuildContext context) {
     editorLayoutLog.finer('Building a TextComponent with key: ${widget.key}');
 
+    // MediaQuery.textScalerOf can dereference a defunct inherited ancestor when this
+    // component rebuilds inside a LayoutBuilder layout pass during teardown, throwing
+    // "Null check operator used on a null value". Fall back to no scaling (NOTE-29).
+    TextScaler textScaler;
+    try {
+      textScaler = widget.textScaler ?? MediaQuery.textScalerOf(context);
+    } catch (_) {
+      textScaler = widget.textScaler ?? TextScaler.noScaling;
+    }
+
     return IgnorePointer(
       child: SuperText(
         key: _textKey,
@@ -1293,7 +1303,7 @@ class TextComponentState extends State<TextComponent> with DocumentComponent imp
         ),
         textAlign: widget.textAlign ?? TextAlign.left,
         textDirection: widget.textDirection ?? TextDirection.ltr,
-        textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
+        textScaler: textScaler,
         maxLines: widget.maxLines,
         overflow: widget.overflow,
         layerBeneathBuilder: (context, textLayout) {

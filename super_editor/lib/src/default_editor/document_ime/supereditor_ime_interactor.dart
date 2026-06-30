@@ -487,7 +487,10 @@ class SuperEditorImeInteractorState extends State<SuperEditorImeInteractor> impl
     }
 
     final myRenderSliver = context.findRenderObject() as RenderSliver?;
-    if (myRenderSliver != null && myRenderSliver.hasSize) {
+    // `attached` matters as much as `hasSize`: a detached sliver can retain its
+    // last size while having no transform path to the root, so getTransformTo
+    // below would throw "Null check operator used on a null value" (NOTE-29).
+    if (myRenderSliver != null && myRenderSliver.hasSize && myRenderSliver.attached) {
       _reportSizeAndTransformToIme();
       _reportCaretRectToIme();
       _reportTextStyleToIme();
@@ -520,7 +523,12 @@ class SuperEditorImeInteractorState extends State<SuperEditorImeInteractor> impl
 
       (size, transform) = sizeAndTransform;
     } else {
-      final renderSliver = context.findRenderObject() as RenderSliver;
+      final renderSliver = context.findRenderObject() as RenderSliver?;
+      // Bail if we've been detached since this frame was scheduled — getTransformTo
+      // walks parent pointers to the root and null-checks a detached chain (NOTE-29).
+      if (renderSliver == null || !renderSliver.attached) {
+        return;
+      }
 
       size = renderSliver.size;
       transform = renderSliver.getTransformTo(null);

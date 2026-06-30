@@ -1257,7 +1257,15 @@ abstract class SuperEditorPlugin {
   }
 
   void _detachFromSuperEditor(Editor editor) {
-    _attachCount[editor] = _attachCount[editor]! - 1;
+    final count = _attachCount[editor];
+    if (count == null) {
+      // Detach can run during dispose for an editor that was never attached through
+      // this plugin (e.g. the editor was swapped before attach ran). There's nothing
+      // to undo, and `_attachCount[editor]!` would otherwise null-check (NOTE-29).
+      return;
+    }
+
+    _attachCount[editor] = count - 1;
 
     if (_attachCount[editor] == 0) {
       detach(editor);

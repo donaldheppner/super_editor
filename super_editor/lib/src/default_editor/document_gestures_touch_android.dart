@@ -668,6 +668,14 @@ class _AndroidDocumentTouchInteractorState extends State<AndroidDocumentTouchInt
 
   void _ensureSelectionExtentIsVisible() {
     editorGesturesLog.fine("Ensuring selection extent is visible");
+    // This runs from deferred frame callbacks (didChangeMetrics, document changes).
+    // By the time the frame fires, this interactor may have been detached, leaving
+    // its render objects with no transform path to the root — the geometry walk
+    // (localToGlobal -> getTransformTo) would then null-check (NOTE-29).
+    if (!mounted) return;
+    final renderObject = context.findRenderObject();
+    if (renderObject == null || !renderObject.attached) return;
+
     final selection = widget.selection.value;
     if (selection == null) {
       // There's no selection. We don't need to take any action.
