@@ -1,0 +1,42 @@
+name: AI Code Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, labeled]
+
+jobs:
+  review:
+    if: contains(github.event.pull_request.labels.*.name, 'ai-review')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Checkout Latest Script from Main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          sparse-checkout: |
+            .github/scripts
+
+      - name: Install dependencies
+        run: npm install --prefix .github/scripts
+
+      - name: Run AI Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          NODE_PATH: .github/scripts/node_modules
+        run: node .github/scripts/ai_code_review.mjs

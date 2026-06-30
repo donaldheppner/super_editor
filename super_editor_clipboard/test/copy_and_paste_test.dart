@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/src/foundation/basic_types.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -196,12 +194,10 @@ void main() {
                 ParagraphNode(
                   id: editor.document.getNodeAt(1)!.id,
                   text: AttributedText("Two"),
-                  metadata: {'textAlign': null},
                 ),
                 ParagraphNode(
                   id: editor.document.getNodeAt(2)!.id,
                   text: AttributedText("Three"),
-                  metadata: {'textAlign': null},
                 ),
               ],
             ),
@@ -255,7 +251,6 @@ void main() {
                 ParagraphNode(
                   id: editor.document.getNodeAt(1)!.id,
                   text: AttributedText("Two"),
-                  metadata: {'textAlign': null},
                 ),
                 ParagraphNode(
                   id: editor.document.getNodeAt(2)!.id,
@@ -579,7 +574,7 @@ final _tableCells = [
       text: AttributedText("BMI Category"),
       metadata: const {
         NodeMetadata.blockType: tableHeaderAttribution,
-        'textAlign': TextAlign.center,
+        'textAlign': "center",
       },
     ),
     TextNode(
@@ -587,7 +582,7 @@ final _tableCells = [
       text: AttributedText("BMI Range (kg/m²)"),
       metadata: const {
         NodeMetadata.blockType: tableHeaderAttribution,
-        'textAlign': TextAlign.center,
+        'textAlign': "center",
       },
     ),
   ],

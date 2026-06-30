@@ -15,8 +15,13 @@ import 'package:super_editor/src/core/edit_context.dart';
 import 'package:super_editor/src/core/editor.dart';
 import 'package:super_editor/src/core/styles.dart';
 import 'package:super_editor/src/default_editor/attributions.dart';
-import 'package:super_editor/src/default_editor/text_ai.dart';
+import 'package:super_editor/src/default_editor/layout_single_column/layout_single_column.dart';
+import 'package:super_editor/src/default_editor/multi_node_editing.dart';
+import 'package:super_editor/src/default_editor/paragraph.dart';
+import 'package:super_editor/src/default_editor/selection_upstream_downstream.dart';
 import 'package:super_editor/src/default_editor/text/custom_underlines.dart';
+import 'package:super_editor/src/default_editor/text_ai.dart';
+import 'package:super_editor/src/default_editor/text_tools.dart';
 import 'package:super_editor/src/infrastructure/_logging.dart';
 import 'package:super_editor/src/infrastructure/attributed_text_styles.dart';
 import 'package:super_editor/src/infrastructure/composable_text.dart';
@@ -25,12 +30,6 @@ import 'package:super_editor/src/infrastructure/key_event_extensions.dart';
 import 'package:super_editor/src/infrastructure/keyboard.dart';
 import 'package:super_editor/src/infrastructure/strings.dart';
 import 'package:super_text_layout/super_text_layout.dart';
-
-import 'layout_single_column/layout_single_column.dart';
-import 'multi_node_editing.dart';
-import 'paragraph.dart';
-import 'selection_upstream_downstream.dart';
-import 'text_tools.dart';
 
 @immutable
 class TextNode extends DocumentNode {
@@ -63,6 +62,15 @@ class TextNode extends DocumentNode {
     }
 
     return true;
+  }
+
+  @override
+  bool isPositionCloserToStart(NodePosition position) {
+    if (position is! TextNodePosition) {
+      throw Exception('Expected a TextNodePosition for position but received a ${position.runtimeType}');
+    }
+
+    return position.offset < text.length / 2;
   }
 
   @override
@@ -899,6 +907,16 @@ class TextComponentState extends State<TextComponent> with DocumentComponent imp
       throw Exception('Expected nodePosition of type TextPosition but received: $nodePosition');
     }
     return textLayout.getOffsetAtPosition(nodePosition);
+  }
+
+  @override
+  CaretGeometry getCaretForPosition(NodePosition nodePosition) {
+    if (nodePosition is! TextPosition) {
+      throw ArgumentError('Expected nodePosition of type TextPosition but received: $nodePosition');
+    }
+
+    // TODO: This was added for AttachmentListComponent. Implement for text.
+    throw UnimplementedError();
   }
 
   @override
@@ -2461,8 +2479,46 @@ class DefaultInsertNewlineAtCaretCommand extends BaseInsertNewlineAtCaretCommand
     DocumentPosition caretPosition,
     NodePosition caretNodePosition,
   ) {
-    if (caretNodePosition is! UpstreamDownstreamNodePosition && caretNodePosition is! TextNodePosition) {
+    final node = context.document.getNodeById(caretPosition.nodeId);
+
+    if (caretNodePosition is! UpstreamDownstreamNodePosition &&
+        caretNodePosition is! TextNodePosition &&
+        (node is! EditableDocumentNode || !node.canSplitAt(caretNodePosition))) {
       // We don't know how to deal with this kind of node.
+      return;
+    }
+
+    if (node is EditableDocumentNode) {
+      final (firstPart, secondPart) = node.splitAt(caretNodePosition, newId: newNodeId);
+
+      if (firstPart.id == node.id) {
+        // The split inserted the new node after the current node.
+        executor
+          ..executeCommand(ReplaceNodeCommand(existingNodeId: node.id, newNode: firstPart))
+          ..executeCommand(InsertNodeAfterNodeCommand(existingNodeId: node.id, newNode: secondPart))
+          ..executeCommand(
+            ChangeSelectionCommand(
+                DocumentSelection.collapsed(
+                    position: DocumentPosition(nodeId: newNodeId, nodePosition: secondPart.beginningPosition)),
+                SelectionChangeType.insertContent,
+                SelectionReason.userInteraction),
+          )
+          ..executeCommand(ChangeComposingRegionCommand(null));
+      } else {
+        // The split inserted the new node before the current node.
+        executor
+          ..executeCommand(ReplaceNodeCommand(existingNodeId: node.id, newNode: secondPart))
+          ..executeCommand(InsertNodeBeforeNodeCommand(existingNodeId: node.id, newNode: firstPart))
+          ..executeCommand(
+            ChangeSelectionCommand(
+                DocumentSelection.collapsed(
+                    position: DocumentPosition(nodeId: newNodeId, nodePosition: firstPart.endPosition)),
+                SelectionChangeType.insertContent,
+                SelectionReason.userInteraction),
+          )
+          ..executeCommand(ChangeComposingRegionCommand(null));
+      }
+
       return;
     }
 
@@ -2472,7 +2528,6 @@ class DefaultInsertNewlineAtCaretCommand extends BaseInsertNewlineAtCaretCommand
       return;
     }
 
-    final node = context.document.getNodeById(caretPosition.nodeId);
     if (caretNodePosition is TextNodePosition && node is TextNode) {
       _insertNewlineInTextNode(context, executor, node, caretPosition, caretNodePosition);
       return;
