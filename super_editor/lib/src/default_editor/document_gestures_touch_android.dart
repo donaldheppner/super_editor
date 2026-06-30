@@ -1284,7 +1284,18 @@ class _AndroidDocumentTouchInteractorState extends State<AndroidDocumentTouchInt
 
   @override
   Widget build(BuildContext context) {
-    final gestureSettings = MediaQuery.maybeOf(context)?.gestureSettings;
+    // `context` can momentarily reference a defunct MediaQuery ancestor when this
+    // interactor rebuilds inside a LayoutBuilder layout pass while the surrounding
+    // tree is being torn down. MediaQuery.maybeOf then dereferences a null
+    // Element.widget and throws "Null check operator used on a null value". Degrade
+    // to default gesture settings instead of crashing. (Patched for MemNote NOTE-29.)
+    MediaQueryData? mediaQuery;
+    try {
+      mediaQuery = MediaQuery.maybeOf(context);
+    } catch (_) {
+      mediaQuery = null;
+    }
+    final gestureSettings = mediaQuery?.gestureSettings;
     // PanGestureRecognizer is above contents to have first pass at gestures, but it only accepts
     // gestures that are over caret or handles or when a long press is in progress.
     // TapGestureRecognizer is below contents so that it doesn't interferes with buttons and other
