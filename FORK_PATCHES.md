@@ -5,40 +5,44 @@ This fork (github.com/donaldheppner/super_editor) tracks upstream
 and carries a small set of MemNote-specific patches. Each entry lists whether the
 patch is a candidate for upstreaming.
 
-## Upstream PR status (NOTE-43)
+## Codec PR staging (NOTE-43)
 
-The NOTE-40/41/42 codec work below was sliced into six stacked PRs against
-upstream `main` (fork branches `md-codec-1-…` through `md-codec-6-…`, each
-based on the previous, so upstream reviews the last commit of each). MemNote
-ticket references were scrubbed from the upstream branches; the fork's codec
-files are byte-identical to the stack tip.
+The NOTE-40/41/42 codec work below was sliced into six stacked branches
+(`md-codec-1-…` through `md-codec-6-…`, each based on the previous) and staged
+as PRs **on this fork** — one PR per branch, each showing exactly its own
+commit. They are upstream-ready (MemNote ticket references scrubbed, package
+test suite fully green, stack tip byte-identical to the fork's codec), but
+**submitting to Flutter-Bounty-Hunters/super_editor is Don's call — do not open
+upstream PRs without his explicit go-ahead.** (Upstream PRs #3079–#3084 were
+opened prematurely on 2026-07-05 and closed the same day.)
 
-| # | Fork branch | Covers | Upstream PR | Status |
+| # | Fork branch | Covers | Staged PR | Status |
 |---|-------------|--------|-------------|--------|
-| 1 | `md-codec-1-inline-commonmark` | NOTE-40: whitespace-safe emphasis, escapes, overlapping spans, safety-net escaping, block-trigger escaping, abutting-span coalescing | [#3079](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3079) | Open |
-| 2 | `md-codec-2-standard-inline-markers` | NOTE-40: strikethrough `~~`, underline `<u>` (legacy forms still parsed) | [#3080](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3080) | Open |
-| 3 | `md-codec-3-code-fence-language` | NOTE-41: fence language metadata, literal fence content, trailing-newline strip (resolves upstream #3006) | [#3081](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3081) | Open |
-| 4 | `md-codec-4-list-serialization` | NOTE-41: real ordinals, nesting indent, canonical `- `, no blank line between mixed-type items | [#3082](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3082) | Open |
-| 5 | `md-codec-5-multiline-blockquotes` | NOTE-41: `> ` on every line, parse-side child joining | [#3083](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3083) | Open |
-| 6 | `md-codec-6-whitespace-policy` | NOTE-42: blank-line/empty-paragraph/soft-break policy, central separators, paste trailing-newline strip | [#3084](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3084) | Open |
+| 1 | `md-codec-1-inline-commonmark` | NOTE-40: whitespace-safe emphasis, escapes, overlapping spans, safety-net escaping, block-trigger escaping, abutting-span coalescing | [fork #2](https://github.com/donaldheppner/super_editor/pull/2) | Staged on fork |
+| 2 | `md-codec-2-standard-inline-markers` | NOTE-40: strikethrough `~~`, underline `<u>` (legacy forms still parsed) | [fork #3](https://github.com/donaldheppner/super_editor/pull/3) | Staged on fork |
+| 3 | `md-codec-3-code-fence-language` | NOTE-41: fence language metadata, literal fence content, trailing-newline strip (resolves upstream #3006) | [fork #4](https://github.com/donaldheppner/super_editor/pull/4) | Staged on fork |
+| 4 | `md-codec-4-list-serialization` | NOTE-41: real ordinals, nesting indent, canonical `- `, no blank line between mixed-type items | [fork #5](https://github.com/donaldheppner/super_editor/pull/5) | Staged on fork |
+| 5 | `md-codec-5-multiline-blockquotes` | NOTE-41: `> ` on every line, parse-side child joining | [fork #6](https://github.com/donaldheppner/super_editor/pull/6) | Staged on fork |
+| 6 | `md-codec-6-whitespace-policy` | NOTE-42: blank-line/empty-paragraph/soft-break policy, central separators, paste trailing-newline strip | [fork #7](https://github.com/donaldheppner/super_editor/pull/7) | Staged on fork |
 
 Notes:
 
-- The NOTE-41 horizontal-rule/table trailing-newline fix is superseded by PR 6's
-  central separator ownership and is not a separate upstream PR.
-- PR 6 changes default serializer output; its description offers to gate the
-  policy behind a `MarkdownSyntax` variant if upstream prefers. If upstream asks
-  for that, the fork should adopt the same gated form.
+- The NOTE-41 horizontal-rule/table trailing-newline fix is superseded by branch
+  6's central separator ownership and is not staged separately.
+- Branch 6 changes default serializer output; if it is ever submitted upstream,
+  offer to gate the policy behind a `MarkdownSyntax` variant, and adopt the same
+  gated form in the fork if upstream asks for it.
 - Verified NOT fixed by this codec work (probed 2026-07-05, still broken at fork
   HEAD): upstream #2759 (loose task lists parse with a leading line break and a
   lost `[x]` state) and #2924 (blank line between list types breaks task
   parsing). Candidates for future fork/upstream work.
-- If upstream merges the PRs, rebase the fork on upstream `main` and drop the
-  corresponding sections below; until then the fork already contains all fixes.
+- If the branches are ever submitted and merged upstream, rebase the fork on
+  upstream `main` and drop the corresponding sections below; until then the fork
+  already contains all fixes.
 
 ## Pending upstream
 
-### Markdown inline codec: valid-CommonMark serialization (MemNote NOTE-40, PRs #3079/#3080)
+### Markdown inline codec: valid-CommonMark serialization (MemNote NOTE-40, fork PRs #2/#3)
 
 `super_editor/lib/src/infrastructure/serialization/markdown/`
 
@@ -72,7 +76,7 @@ Tests: `super_editor/test/infrastructure/serialization/markdown/attributed_text_
 `super_editor_markdown_test.dart`, `supereditor_attributions_test.dart`, and
 `ime_ios_exceptional_cases_test.dart`.
 
-### Markdown block codec: round-trippable block serialization (MemNote NOTE-41, PRs #3081/#3082/#3083)
+### Markdown block codec: round-trippable block serialization (MemNote NOTE-41, fork PRs #4/#5/#6)
 
 `super_editor/lib/src/infrastructure/serialization/markdown/`
 
@@ -106,7 +110,7 @@ Tests: `super_editor_markdown_test.dart` (new blockquote/code-language/list
 round-trip cases and updated list expectations) and canonicalized fixtures in
 `super_editor_markdown_pasting_test.dart`.
 
-### Markdown codec: blank-line, empty-paragraph & line-break policy (MemNote NOTE-42, PR #3084)
+### Markdown codec: blank-line, empty-paragraph & line-break policy (MemNote NOTE-42, fork PR #7)
 
 `super_editor/lib/src/infrastructure/serialization/markdown/`
 
