@@ -152,6 +152,24 @@ plus updated serialization/deserialization expectations),
 `super_editor_markdown_pasting_test.dart`, and updated custom serializers in
 `custom_parsers/`.
 
+### Deterministic node ids for structured-content paste (MemNote NOTE-44)
+
+`super_editor/lib/src/default_editor/multi_node_editing.dart`
+
+`PasteStructuredContentEditorCommand` minted node ids inside `execute()` — for
+the downstream half of a split paragraph and for the empty trailing paragraph
+inserted below pasted block content. Undo/redo replays the command history
+against a document snapshot, so every replay recreated those nodes with fresh
+ids, orphaning any later history entry that referenced them (e.g. typing into
+the split-off paragraph, then undoing). The ids are now fixed at construction
+and can be supplied by the caller (`splitNodeId`, `trailingParagraphNodeId`);
+MemNote's paste command passes ids stored on its own command object so replays
+are byte-identical.
+
+Tests: covered indirectly by `paste_test.dart` /
+`super_editor_markdown_pasting_test.dart` (behavior unchanged) and by
+MemNote's `markdown_paste_handler_test.dart` undo/redo group.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

@@ -33,11 +33,28 @@ class PasteStructuredContentEditorCommand extends EditCommand {
   PasteStructuredContentEditorCommand({
     required Document content,
     required DocumentPosition pastePosition,
+    String? splitNodeId,
+    String? trailingParagraphNodeId,
   })  : _content = content,
-        _pastePosition = pastePosition;
+        _pastePosition = pastePosition,
+        _splitNodeId = splitNodeId ?? Editor.createNodeId(),
+        _trailingParagraphNodeId = trailingParagraphNodeId ?? Editor.createNodeId();
 
   final Document _content;
   final DocumentPosition _pastePosition;
+
+  /// Ids for the nodes this command may create while executing (the downstream
+  /// half of a split paragraph, and the empty trailing paragraph added below
+  /// pasted block content).
+  ///
+  /// These are fixed at construction (or supplied by the caller) instead of
+  /// generated inside [execute]: undo/redo replays the command history against
+  /// a document snapshot, so a replayed execution must recreate the same nodes
+  /// with the same ids. Ids minted during [execute] would differ on every
+  /// replay, orphaning any later history entry that references the created
+  /// node.
+  final String _splitNodeId;
+  final String _trailingParagraphNodeId;
 
   @override
   HistoryBehavior get historyBehavior => HistoryBehavior.undoable;
@@ -150,7 +167,7 @@ class PasteStructuredContentEditorCommand extends EditCommand {
         // The pasted content isn't text. It might be an image, table, etc. As a UX
         // policy, we insert an empty paragraph after the pasted content because users
         // typically expect to be able to start typing after pasting.
-        final newNodeId = Editor.createNodeId();
+        final newNodeId = _trailingParagraphNodeId;
         document.insertNodeAfter(
           existingNodeId: pastedNode.id,
           newNode: ParagraphNode(id: newNodeId, text: AttributedText()),
@@ -316,7 +333,7 @@ class PasteStructuredContentEditorCommand extends EditCommand {
     String currentNodeWithSelectionId,
     int pasteTextOffset,
   ) {
-    final newNodeId = Editor.createNodeId();
+    final newNodeId = _splitNodeId;
     executor.executeCommand(
       SplitParagraphCommand(
         nodeId: currentNodeWithSelectionId,
