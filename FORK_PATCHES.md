@@ -170,6 +170,23 @@ Tests: covered indirectly by `paste_test.dart` /
 `super_editor_markdown_pasting_test.dart` (behavior unchanged) and by
 MemNote's `markdown_paste_handler_test.dart` undo/redo group.
 
+### Pluggable clipboard serialization for copy/cut (MemNote NOTE-47)
+
+`super_editor/lib/src/default_editor/common_editor_operations.dart`
+
+`CommonEditorOperations.copy()`/`cut()` always serialized the selection to
+plain text, silently dropping all styling. A static
+`CommonEditorOperations.clipboardSerializer` hook now lets apps replace the
+serialization (MemNote sets it to its markdown serializer); when unset,
+behavior is unchanged. The override covers every copy path that runs through
+`CommonEditorOperations` — keyboard shortcuts and mobile popover toolbars.
+Also hardens `copy()`/`cut()` against a null selection (previously `!`).
+Candidate for upstreaming, likely reshaped as an instance-level or
+`SuperEditor`-level parameter if upstream prefers.
+
+Tests: MemNote's `markdown_copy_test.dart` (copy/cut through
+`CommonEditorOperations` with a mocked clipboard).
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

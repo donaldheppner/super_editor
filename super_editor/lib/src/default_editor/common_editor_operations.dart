@@ -47,6 +47,15 @@ class CommonEditorOperations {
     required this.documentLayoutResolver,
   });
 
+  /// Serializes selections for [copy] and [cut].
+  ///
+  /// Defaults to plain text when `null`. Apps can replace this to put a richer
+  /// text representation on the clipboard — e.g. markdown, so styling survives
+  /// copy/paste — and the override applies to every copy path that runs
+  /// through [CommonEditorOperations]: keyboard shortcuts and the mobile
+  /// popover toolbars alike.
+  static String Function(Document document, DocumentSelection selection)? clipboardSerializer;
+
   // Marked as protected for extension methods and subclasses
   @protected
   final Document document;
@@ -2279,30 +2288,41 @@ class CommonEditorOperations {
     return extentNode is TextNode;
   }
 
-  /// Serializes the current selection to plain text, and adds it to the
-  /// clipboard.
+  /// Serializes the current selection with [clipboardSerializer] (plain text
+  /// by default), and adds it to the clipboard.
   void copy() {
-    final textToCopy = _textInSelection(
-      document: document,
-      documentSelection: composer.selection!,
-    );
+    final selection = composer.selection;
+    if (selection == null) {
+      return;
+    }
+
     // TODO: figure out a general approach for asynchronous behaviors that
     //       need to be carried out in response to user input.
-    _saveToClipboard(textToCopy);
+    _saveToClipboard(_serializeSelectionForClipboard(selection));
   }
 
-  /// Serializes the current selection to plain text, adds it to the
-  /// clipboard, and then deletes the selected content.
+  /// Serializes the current selection with [clipboardSerializer] (plain text
+  /// by default), adds it to the clipboard, and then deletes the selected
+  /// content.
   void cut() {
-    final textToCut = _textInSelection(
-      document: document,
-      documentSelection: composer.selection!,
-    );
+    final selection = composer.selection;
+    if (selection == null) {
+      return;
+    }
+
     // TODO: figure out a general approach for asynchronous behaviors that
     //       need to be carried out in response to user input.
-    _saveToClipboard(textToCut);
+    _saveToClipboard(_serializeSelectionForClipboard(selection));
 
     deleteSelection(TextAffinity.downstream);
+  }
+
+  String _serializeSelectionForClipboard(DocumentSelection selection) {
+    final serializer = clipboardSerializer;
+    if (serializer != null) {
+      return serializer(document, selection);
+    }
+    return _textInSelection(document: document, documentSelection: selection);
   }
 
   Future<void> _saveToClipboard(String text) {
