@@ -5,9 +5,40 @@ This fork (github.com/donaldheppner/super_editor) tracks upstream
 and carries a small set of MemNote-specific patches. Each entry lists whether the
 patch is a candidate for upstreaming.
 
+## Upstream PR status (NOTE-43)
+
+The NOTE-40/41/42 codec work below was sliced into six stacked PRs against
+upstream `main` (fork branches `md-codec-1-…` through `md-codec-6-…`, each
+based on the previous, so upstream reviews the last commit of each). MemNote
+ticket references were scrubbed from the upstream branches; the fork's codec
+files are byte-identical to the stack tip.
+
+| # | Fork branch | Covers | Upstream PR | Status |
+|---|-------------|--------|-------------|--------|
+| 1 | `md-codec-1-inline-commonmark` | NOTE-40: whitespace-safe emphasis, escapes, overlapping spans, safety-net escaping, block-trigger escaping, abutting-span coalescing | [#3079](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3079) | Open |
+| 2 | `md-codec-2-standard-inline-markers` | NOTE-40: strikethrough `~~`, underline `<u>` (legacy forms still parsed) | [#3080](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3080) | Open |
+| 3 | `md-codec-3-code-fence-language` | NOTE-41: fence language metadata, literal fence content, trailing-newline strip (resolves upstream #3006) | [#3081](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3081) | Open |
+| 4 | `md-codec-4-list-serialization` | NOTE-41: real ordinals, nesting indent, canonical `- `, no blank line between mixed-type items | [#3082](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3082) | Open |
+| 5 | `md-codec-5-multiline-blockquotes` | NOTE-41: `> ` on every line, parse-side child joining | [#3083](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3083) | Open |
+| 6 | `md-codec-6-whitespace-policy` | NOTE-42: blank-line/empty-paragraph/soft-break policy, central separators, paste trailing-newline strip | [#3084](https://github.com/Flutter-Bounty-Hunters/super_editor/pull/3084) | Open |
+
+Notes:
+
+- The NOTE-41 horizontal-rule/table trailing-newline fix is superseded by PR 6's
+  central separator ownership and is not a separate upstream PR.
+- PR 6 changes default serializer output; its description offers to gate the
+  policy behind a `MarkdownSyntax` variant if upstream prefers. If upstream asks
+  for that, the fork should adopt the same gated form.
+- Verified NOT fixed by this codec work (probed 2026-07-05, still broken at fork
+  HEAD): upstream #2759 (loose task lists parse with a leading line break and a
+  lost `[x]` state) and #2924 (blank line between list types breaks task
+  parsing). Candidates for future fork/upstream work.
+- If upstream merges the PRs, rebase the fork on upstream `main` and drop the
+  corresponding sections below; until then the fork already contains all fixes.
+
 ## Pending upstream
 
-### Markdown inline codec: valid-CommonMark serialization (MemNote NOTE-40)
+### Markdown inline codec: valid-CommonMark serialization (MemNote NOTE-40, PRs #3079/#3080)
 
 `super_editor/lib/src/infrastructure/serialization/markdown/`
 
@@ -15,7 +46,10 @@ Rewrites `AttributedTextMarkdownSerializer` and extends the inline parser so tha
 serialized markdown re-parses to the same styled text:
 
 - Whitespace at the edges of bold/italic/strikethrough/code spans is moved outside
-  the style markers (`**bold **` → `**bold** `). Upstream issues #2452 / #2650.
+  the style markers (`**bold **` → `**bold** `). Upstream issues #2424 / #2650.
+- Abutting spans of the same attribution are coalesced before trimming, so a bold
+  run stored as two spans meeting at a space doesn't lose the space's styling
+  (added during NOTE-43 upstreaming).
 - Strikethrough serializes as GFM `~~text~~` instead of the non-standard single `~`.
   The parser still accepts the legacy single-tilde form.
 - Underline serializes as `<u>text</u>` instead of the proprietary `¬text¬` marker.
@@ -34,10 +68,11 @@ serialized markdown re-parses to the same styled text:
   those characters doesn't change block type on the next parse.
 
 Tests: `super_editor/test/infrastructure/serialization/markdown/attributed_text_markdown_test.dart`
-(group "AttributedText markdown round-trips (NOTE-40)") and updated expectations in
-`super_editor_markdown_test.dart`.
+(group "AttributedText markdown round-trips") and updated expectations in
+`super_editor_markdown_test.dart`, `supereditor_attributions_test.dart`, and
+`ime_ios_exceptional_cases_test.dart`.
 
-### Markdown block codec: round-trippable block serialization (MemNote NOTE-41)
+### Markdown block codec: round-trippable block serialization (MemNote NOTE-41, PRs #3081/#3082/#3083)
 
 `super_editor/lib/src/infrastructure/serialization/markdown/`
 
@@ -48,7 +83,7 @@ Fixes block-level constructs that corrupted on a serialize/parse round trip:
   (` ```dart ` no longer degrades to a bare ` ``` `). Fence content is written as
   literal plain text (no backslash escaping / hard-break spaces inside fences),
   and the parser's trailing newline is stripped so fences don't grow a blank
-  line per save.
+  line per save. Resolves upstream #3006.
 - Ordered list items serialize with real sequential ordinals (`1. 2. 3.`)
   computed from their position among consecutive same-indent ordered siblings,
   instead of a literal `1.` for every item.
@@ -64,15 +99,14 @@ Fixes block-level constructs that corrupted on a serialize/parse round trip:
   paragraphs on the next parse. The parser also joins a blockquote's block
   children with a blank line instead of fusing them (`> a\n>\n> b` no longer
   collapses to "ab").
-- Horizontal rules and tables follow the node-separator scheme (a trailing
-  newline when not the last node) so they're followed by a blank line instead of
-  fusing with the next block.
+- Horizontal rules and tables are followed by a blank line instead of fusing
+  with the next block (now via NOTE-42's central separator ownership).
 
 Tests: `super_editor_markdown_test.dart` (new blockquote/code-language/list
 round-trip cases and updated list expectations) and canonicalized fixtures in
 `super_editor_markdown_pasting_test.dart`.
 
-### Markdown codec: blank-line, empty-paragraph & line-break policy (MemNote NOTE-42)
+### Markdown codec: blank-line, empty-paragraph & line-break policy (MemNote NOTE-42, PR #3084)
 
 `super_editor/lib/src/infrastructure/serialization/markdown/`
 
@@ -111,10 +145,9 @@ byte form now parses to 2N empty paragraphs and serializes back to the *same
 bytes*, so stored notes don't churn — the editor simply shows 2N empty lines
 where the old parser showed N (typically 2 instead of 1). Old two-space
 hard-break soft wraps and old trailing-blank-line forms heal in one save and
-are stable afterwards. Verified by the `whitespace policy (NOTE-42)` test
-group.
+are stable afterwards. Verified by the `whitespace policy` test group.
 
-Tests: `super_editor_markdown_test.dart` (group "whitespace policy (NOTE-42)",
+Tests: `super_editor_markdown_test.dart` (group "whitespace policy",
 plus updated serialization/deserialization expectations),
 `super_editor_markdown_pasting_test.dart`, and updated custom serializers in
 `custom_parsers/`.
