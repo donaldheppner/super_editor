@@ -222,7 +222,18 @@ class HorizontalRuleNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializ
       }
     }
 
-    return '---';
+    final buffer = StringBuffer('---');
+
+    // We're not at the end of the document yet. Add a trailing newline so that,
+    // combined with the node separator, the rule is followed by a blank line.
+    // Without it the rule sits directly against the next block, which risks
+    // being re-parsed as a setext heading underline or list content.
+    final nodeIndex = document.getNodeIndexById(node.id);
+    if (nodeIndex != document.nodeCount - 1) {
+      buffer.writeln();
+    }
+
+    return buffer.toString();
   }
 }
 
@@ -254,20 +265,91 @@ class ListItemNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<Lis
 
     final buffer = StringBuffer();
 
-    final indent = List.generate(node.indent + 1, (index) => '  ').join('');
-    final symbol = node.type == ListItemType.unordered ? '*' : '1.';
+    final indent = _indentPrefix(document, node);
+    final symbol = node.type == ListItemType.unordered ? '-' : '${_ordinal(document, node)}.';
 
     buffer.write('$indent$symbol ${textToConvert.toMarkdown()}');
 
     final nodeIndex = document.getNodeIndexById(node.id);
     final nodeBelow = nodeIndex < document.nodeCount - 1 ? document.getNodeAt(nodeIndex + 1) : null;
-    if (nodeBelow != null && (nodeBelow is! ListItemNode || nodeBelow.type != node.type)) {
+    if (nodeBelow != null && nodeBelow is! ListItemNode) {
       // This list item is the last item in the list. Add an extra
       // blank line after it.
       buffer.writeln('');
     }
 
     return buffer.toString();
+  }
+
+  /// The leading spaces for [node], computed from the marker widths of its
+  /// ancestor list items so that a nested item sits at the content column of
+  /// its parent — the column markdown requires for a nested list.
+  ///
+  /// A top-level item has no leading spaces. An item nested under `- ` is
+  /// indented 2 spaces, under `1. ` 3 spaces, under `10. ` 4 spaces, etc. A
+  /// fixed 2-space indent wouldn't be enough under an ordered parent, and the
+  /// nesting would silently flatten on the next parse.
+  String _indentPrefix(Document document, ListItemNode node) {
+    if (node.indent == 0) {
+      return '';
+    }
+
+    // Walk the contiguous run of list items above this node, recording the
+    // marker width of the most recent item at each indent level — those are
+    // this node's ancestors.
+    final nodeIndex = document.getNodeIndexById(node.id);
+    var runStart = nodeIndex;
+    while (runStart > 0 && document.getNodeAt(runStart - 1) is ListItemNode) {
+      runStart -= 1;
+    }
+
+    final markerWidthByLevel = <int, int>{};
+    for (var i = runStart; i < nodeIndex; i += 1) {
+      final item = document.getNodeAt(i) as ListItemNode;
+      markerWidthByLevel[item.indent] = _markerWidth(document, item);
+    }
+
+    var width = 0;
+    for (var level = 0; level < node.indent; level += 1) {
+      // A level with no preceding item can only come from malformed indentation.
+      // Fall back to the unordered marker width.
+      width += markerWidthByLevel[level] ?? 2;
+    }
+    return ' ' * width;
+  }
+
+  /// The width of the marker [node] serializes with, including the trailing
+  /// space: `- ` is 2, `1. ` is 3, `10. ` is 4.
+  int _markerWidth(Document document, ListItemNode node) {
+    if (node.type == ListItemType.unordered) {
+      return 2;
+    }
+    return '${_ordinal(document, node)}. '.length;
+  }
+
+  /// The ordinal for an ordered list item — its 1-based position among the
+  /// consecutive ordered siblings at the same indent level.
+  int _ordinal(Document document, ListItemNode node) {
+    var ordinal = 1;
+    var index = document.getNodeIndexById(node.id) - 1;
+    while (index >= 0) {
+      final previous = document.getNodeAt(index);
+      if (previous is! ListItemNode || previous.indent < node.indent) {
+        // We've reached the start of the list, or left this item's nesting scope.
+        break;
+      }
+      if (previous.indent == node.indent) {
+        if (previous.type != ListItemType.ordered) {
+          // An unordered sibling at the same level means this item started a
+          // new ordered list.
+          break;
+        }
+        ordinal += 1;
+      }
+      // Items with a deeper indent belong to an earlier sibling; keep scanning.
+      index -= 1;
+    }
+    return ordinal;
   }
 }
 
@@ -318,12 +400,19 @@ class ParagraphNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<Pa
     } else if (blockType == header6Attribution) {
       buffer.write('###### $inlineMarkdown');
     } else if (blockType == blockquoteAttribution) {
-      // TODO: handle multiline
-      buffer.write('> $inlineMarkdown');
+      buffer.write(_serializeBlockquote(inlineMarkdown));
     } else if (blockType == codeAttribution) {
+      final language = node.getMetadataValue('codeLanguage') as String? ?? '';
+      // A code fence holds literal text: serialize the plain text, not the
+      // inline markdown, so code isn't backslash-escaped or given hard-break
+      // trailing spaces.
+      final code = textToConvert.toPlainText();
+      // The markdown parser stores fenced code with a trailing newline; strip a
+      // single one so the fence doesn't grow a blank line on every round trip.
+      final trimmedCode = code.endsWith('\n') ? code.substring(0, code.length - 1) : code;
       buffer //
-        ..writeln('```') //
-        ..writeln(inlineMarkdown) //
+        ..writeln('```$language') //
+        ..writeln(trimmedCode) //
         ..write('```');
     } else {
       final String? textAlign = node.getMetadataValue('textAlign');
@@ -349,6 +438,19 @@ class ParagraphNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<Pa
     }
 
     return buffer.toString();
+  }
+
+  /// Serializes blockquote text, prefixing every line with `> ` (a bare `>`
+  /// for empty lines) so multi-line quotes keep their marker on every line.
+  /// Without the marker, the second line loses the quote on the next parse and
+  /// splits into a separate paragraph. Hard-break trailing spaces are dropped —
+  /// the `>` markers alone keep the lines in one quote.
+  static String _serializeBlockquote(String inlineMarkdown) {
+    return inlineMarkdown
+        .split('\n')
+        .map((line) => line.trimRight())
+        .map((line) => line.isEmpty ? '>' : '> $line')
+        .join('\n');
   }
 }
 
@@ -995,6 +1097,14 @@ class TableBlockNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<T
           buffer.write(' |');
         }
       }
+    }
+
+    // We're not at the end of the document yet. Add a trailing newline so
+    // that, combined with the node separator, the table is followed by a
+    // blank line and doesn't fuse with the next block on the next parse.
+    final nodeIndex = document.getNodeIndexById(node.id);
+    if (nodeIndex != document.nodeCount - 1) {
+      buffer.writeln();
     }
 
     return buffer.toString();

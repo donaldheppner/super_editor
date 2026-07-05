@@ -37,6 +37,41 @@ Tests: `super_editor/test/infrastructure/serialization/markdown/attributed_text_
 (group "AttributedText markdown round-trips (NOTE-40)") and updated expectations in
 `super_editor_markdown_test.dart`.
 
+### Markdown block codec: round-trippable block serialization (MemNote NOTE-41)
+
+`super_editor/lib/src/infrastructure/serialization/markdown/`
+
+Fixes block-level constructs that corrupted on a serialize/parse round trip:
+
+- Code fence info strings survive: the parser stores the fence language in the
+  code `ParagraphNode`'s `codeLanguage` metadata and the serializer re-emits it
+  (` ```dart ` no longer degrades to a bare ` ``` `). Fence content is written as
+  literal plain text (no backslash escaping / hard-break spaces inside fences),
+  and the parser's trailing newline is stripped so fences don't grow a blank
+  line per save.
+- Ordered list items serialize with real sequential ordinals (`1. 2. 3.`)
+  computed from their position among consecutive same-indent ordered siblings,
+  instead of a literal `1.` for every item.
+- Top-level list items have zero leading spaces (previously every list gained a
+  2-space base indent per save). Nested items are indented to their parent
+  marker's content column (2 under `- `, 3 under `1. `, 4 under `10. `) — a
+  fixed 2-space step silently flattens nesting under ordered parents on the
+  next parse.
+- Unordered lists serialize with a canonical `- ` marker (`*` bullets heal to
+  `- ` on the next save — a one-time, idempotent normalization).
+- Multi-line blockquotes emit `> ` on every line (a bare `>` for blank lines);
+  previously only the first line was marked and later lines split into separate
+  paragraphs on the next parse. The parser also joins a blockquote's block
+  children with a blank line instead of fusing them (`> a\n>\n> b` no longer
+  collapses to "ab").
+- Horizontal rules and tables follow the node-separator scheme (a trailing
+  newline when not the last node) so they're followed by a blank line instead of
+  fusing with the next block.
+
+Tests: `super_editor_markdown_test.dart` (new blockquote/code-language/list
+round-trip cases and updated list expectations) and canonicalized fixtures in
+`super_editor_markdown_pasting_test.dart`.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

@@ -199,6 +199,30 @@ void main() {
         expect(serializeDocumentToMarkdown(doc), '> This is a **blockquote**');
       });
 
+      test('multi-line blockquote marks every line', () {
+        final doc = MutableDocument(nodes: [
+          ParagraphNode(
+            id: '1',
+            text: AttributedText('First line\nSecond line'),
+            metadata: const {'blockType': blockquoteAttribution},
+          ),
+        ]);
+
+        expect(serializeDocumentToMarkdown(doc), '> First line\n> Second line');
+      });
+
+      test('blockquote with a blank line emits a bare > marker', () {
+        final doc = MutableDocument(nodes: [
+          ParagraphNode(
+            id: '1',
+            text: AttributedText('First paragraph\n\nSecond paragraph'),
+            metadata: const {'blockType': blockquoteAttribution},
+          ),
+        ]);
+
+        expect(serializeDocumentToMarkdown(doc), '> First paragraph\n>\n> Second paragraph');
+      });
+
       test('code', () {
         final doc = MutableDocument(nodes: [
           ParagraphNode(
@@ -213,6 +237,45 @@ void main() {
           '''
 ```
 This is some code
+```''',
+        );
+      });
+
+      test('code with language', () {
+        final doc = MutableDocument(nodes: [
+          ParagraphNode(
+            id: '1',
+            text: AttributedText('void main() {}\n'),
+            metadata: const {
+              'blockType': codeAttribution,
+              'codeLanguage': 'dart',
+            },
+          ),
+        ]);
+
+        expect(
+          serializeDocumentToMarkdown(doc),
+          '''
+```dart
+void main() {}
+```''',
+        );
+      });
+
+      test('code is serialized literally, without markdown escapes', () {
+        final doc = MutableDocument(nodes: [
+          ParagraphNode(
+            id: '1',
+            text: AttributedText('a *b* c'),
+            metadata: const {'blockType': codeAttribution},
+          ),
+        ]);
+
+        expect(
+          serializeDocumentToMarkdown(doc),
+          '''
+```
+a *b* c
 ```''',
         );
       });
@@ -633,6 +696,16 @@ Paragraph3""");
         expect(serializeDocumentToMarkdown(doc), '---');
       });
 
+      test('horizontal rule is separated from the next block by a blank line', () {
+        final doc = MutableDocument(nodes: [
+          ParagraphNode(id: '1', text: AttributedText('above')),
+          HorizontalRuleNode(id: '2'),
+          ParagraphNode(id: '3', text: AttributedText('below')),
+        ]);
+
+        expect(serializeDocumentToMarkdown(doc), 'above\n\n---\n\nbelow');
+      });
+
       test('unordered list items', () {
         final doc = MutableDocument(nodes: [
           ListItemNode(
@@ -667,11 +740,11 @@ Paragraph3""");
         expect(
           serializeDocumentToMarkdown(doc),
           '''
-  * Unordered 1
-  * Unordered 2
-    * Unordered 2.1
-    * Unordered 2.2
-  * Unordered 3''',
+- Unordered 1
+- Unordered 2
+  - Unordered 2.1
+  - Unordered 2.2
+- Unordered 3''',
         );
       });
 
@@ -684,7 +757,7 @@ Paragraph3""");
           ),
         ]);
 
-        expect(serializeDocumentToMarkdown(doc), '  * **Unordered** 1');
+        expect(serializeDocumentToMarkdown(doc), '- **Unordered** 1');
       });
 
       test('ordered list items', () {
@@ -721,11 +794,46 @@ Paragraph3""");
         expect(
           serializeDocumentToMarkdown(doc),
           '''
-  1. Ordered 1
-  1. Ordered 2
-    1. Ordered 2.1
-    1. Ordered 2.2
-  1. Ordered 3''',
+1. Ordered 1
+2. Ordered 2
+   1. Ordered 2.1
+   2. Ordered 2.2
+3. Ordered 3''',
+        );
+      });
+
+      test('ordered list items round-trip with their nesting intact', () {
+        final doc = MutableDocument(nodes: [
+          ListItemNode(id: '1', itemType: ListItemType.ordered, text: AttributedText('Ordered 1')),
+          ListItemNode(id: '2', itemType: ListItemType.ordered, indent: 1, text: AttributedText('Ordered 1.1')),
+          ListItemNode(id: '3', itemType: ListItemType.ordered, indent: 1, text: AttributedText('Ordered 1.2')),
+          ListItemNode(id: '4', itemType: ListItemType.ordered, text: AttributedText('Ordered 2')),
+        ]);
+
+        final markdown = serializeDocumentToMarkdown(doc);
+        final reparsed = deserializeMarkdownToDocument(markdown);
+
+        // A 2-space indent would silently flatten the nested items on the next
+        // parse; the serializer must indent to the parent marker's width.
+        expect(reparsed.nodeCount, 4);
+        expect((reparsed.getNodeAt(1)! as ListItemNode).indent, 1);
+        expect((reparsed.getNodeAt(2)! as ListItemNode).indent, 1);
+        expect((reparsed.getNodeAt(3)! as ListItemNode).indent, 0);
+      });
+
+      test('mixed-type nested list items', () {
+        final doc = MutableDocument(nodes: [
+          ListItemNode(id: '1', itemType: ListItemType.ordered, text: AttributedText('Ordered 1')),
+          ListItemNode(id: '2', itemType: ListItemType.unordered, indent: 1, text: AttributedText('Bullet 1.1')),
+          ListItemNode(id: '3', itemType: ListItemType.ordered, text: AttributedText('Ordered 2')),
+        ]);
+
+        expect(
+          serializeDocumentToMarkdown(doc),
+          '''
+1. Ordered 1
+   - Bullet 1.1
+2. Ordered 2''',
         );
       });
 
@@ -738,7 +846,7 @@ Paragraph3""");
           ),
         ]);
 
-        expect(serializeDocumentToMarkdown(doc), '  1. **Ordered** 1');
+        expect(serializeDocumentToMarkdown(doc), '1. **Ordered** 1');
       });
 
       test('tasks', () {
@@ -974,6 +1082,24 @@ with multiple lines
         expect(blockquote.text.toPlainText(), 'This is a blockquote');
       });
 
+      test('multi-line blockquote parses into a single node', () {
+        final blockquoteDoc = deserializeMarkdownToDocument('> First line\n> Second line');
+
+        expect(blockquoteDoc.nodeCount, 1);
+        final blockquote = blockquoteDoc.first as ParagraphNode;
+        expect(blockquote.getMetadataValue('blockType'), blockquoteAttribution);
+        expect(blockquote.text.toPlainText(), 'First line\nSecond line');
+      });
+
+      test('blockquote with a > blank line keeps its paragraphs separated', () {
+        final blockquoteDoc = deserializeMarkdownToDocument('> First paragraph\n>\n> Second paragraph');
+
+        expect(blockquoteDoc.nodeCount, 1);
+        final blockquote = blockquoteDoc.first as ParagraphNode;
+        expect(blockquote.getMetadataValue('blockType'), blockquoteAttribution);
+        expect(blockquote.text.toPlainText(), 'First paragraph\n\nSecond paragraph');
+      });
+
       test('code block', () {
         final codeBlockDoc = deserializeMarkdownToDocument('''
 ```
@@ -983,6 +1109,19 @@ This is some code
         final code = codeBlockDoc.first as ParagraphNode;
         expect(code.getMetadataValue('blockType'), codeAttribution);
         expect(code.text.toPlainText(), 'This is some code\n');
+        expect(code.getMetadataValue('codeLanguage'), isNull);
+      });
+
+      test('code block with language', () {
+        final codeBlockDoc = deserializeMarkdownToDocument('''
+```dart
+void main() {}
+```''');
+
+        final code = codeBlockDoc.first as ParagraphNode;
+        expect(code.getMetadataValue('blockType'), codeAttribution);
+        expect(code.text.toPlainText(), 'void main() {}\n');
+        expect(code.getMetadataValue('codeLanguage'), 'dart');
       });
 
       test('image', () {
