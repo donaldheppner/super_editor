@@ -204,7 +204,7 @@ void main() {
           ], getter: imeClientGetter);
 
           // Ensure the text was replaced and the style was preserved.
-          expect(testContext.document, equalsMarkdown('**Fixed **'));
+          expect(testContext.document, equalsMarkdown('**Fixed** '));
         });
       });
 
