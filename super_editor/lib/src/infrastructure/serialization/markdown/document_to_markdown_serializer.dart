@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:attributed_text/attributed_text.dart';
 import 'package:flutter/foundation.dart';
+import 'package:markdown/markdown.dart' as md;
 import 'package:super_editor/src/core/document.dart';
 import 'package:super_editor/src/core/document_selection.dart';
 import 'package:super_editor/src/default_editor/attributions.dart';
@@ -13,6 +14,7 @@ import 'package:super_editor/src/default_editor/selection_upstream_downstream.da
 import 'package:super_editor/src/default_editor/tables/table_block.dart';
 import 'package:super_editor/src/default_editor/tasks.dart';
 import 'package:super_editor/src/default_editor/text.dart';
+import 'package:super_editor/src/infrastructure/serialization/markdown/markdown_inline_parser.dart';
 import 'package:super_editor/src/infrastructure/serialization/markdown/super_editor_syntax.dart';
 
 /// Serializes the given [doc] to Markdown text.
@@ -298,10 +300,10 @@ class ParagraphNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<Pa
 
     final Attribution? blockType = node.getMetadataValue('blockType');
 
-    final inlineMarkdown = (textSelection != null //
-            ? node.text.copyText(textSelection.start, textSelection.end)
-            : node.text)
-        .toMarkdown();
+    final textToConvert = textSelection != null //
+        ? node.text.copyText(textSelection.start, textSelection.end)
+        : node.text;
+    final inlineMarkdown = textToConvert.toMarkdown();
 
     if (blockType == header1Attribution) {
       buffer.write('# $inlineMarkdown');
@@ -332,7 +334,10 @@ class ParagraphNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<Pa
           buffer.writeln(alignmentToken);
         }
       }
-      buffer.write(inlineMarkdown);
+      // A plain paragraph has no block-level syntax of its own, so a line starting
+      // with "#", "- ", "1. ", etc., would change block type on the next parse.
+      // Serialize with those trigger characters escaped.
+      buffer.write(textToConvert.toMarkdown(escapeLineStartTriggers: true));
     }
 
     // We're not at the end of the document yet. Add a blank line after the
@@ -394,84 +399,375 @@ String? _convertAlignmentToMarkdown(String alignment) {
 
 /// Extension on [AttributedText] to serialize the [AttributedText] to a Markdown `String`.
 extension Markdown on AttributedText {
-  String toMarkdown() {
+  /// Serializes this [AttributedText] to Markdown.
+  ///
+  /// When [escapeLineStartTriggers] is `true`, a character at the start of a line
+  /// that would be re-interpreted as block-level syntax on the next parse (e.g., a
+  /// leading "#", ">", "- ", or "1. ") is backslash-escaped. Enable this when the
+  /// text is serialized as a plain paragraph. Leave it disabled when the surrounding
+  /// serializer supplies its own block-level syntax (headers, list items, tasks,
+  /// table cells, etc.), where a leading "#" can't change the block type.
+  String toMarkdown({bool escapeLineStartTriggers = false}) {
     final serializer = AttributedTextMarkdownSerializer();
-    return serializer.serialize(this);
+    return serializer.serialize(this, escapeLineStartTriggers: escapeLineStartTriggers);
   }
 }
 
-/// Serializes an [AttributedText] into markdown format
-class AttributedTextMarkdownSerializer extends AttributionVisitor {
-  late String _fullText;
-  late StringBuffer _buffer;
-  late int _bufferCursor;
+/// Serializes an [AttributedText] into markdown format.
+///
+/// The serializer guarantees, as best markdown allows, that its output re-parses
+/// back to the same styled text:
+///
+///  * Whitespace at the edges of bold/italic/strikethrough/code spans is moved
+///    outside the style markers, because CommonMark doesn't recognize a closing
+///    marker that follows whitespace — "**bold **" re-parses as plain text and
+///    the styling would silently vanish. The edge whitespace itself loses the
+///    styling, which is invisible anyway.
+///  * Overlapping (non-nested) spans are serialized by closing and re-opening
+///    styles, producing properly nested markers that CommonMark can re-parse.
+///  * Characters carrying [markdownEscapeAttribution] (characters that were
+///    backslash-escaped in the original markdown) are re-escaped on the way out.
+///  * As a safety net, the output is re-parsed and compared against the input.
+///    If the styles don't survive the round trip, markdown-significant characters
+///    are backslash-escaped and the escaped serialization is used instead. This
+///    prevents unstyled text like "3*4 and 5*6" from gaining emphasis on the
+///    next parse.
+class AttributedTextMarkdownSerializer {
+  /// Inline styles whose markers can't sit against whitespace in CommonMark.
+  ///
+  /// Spans of these attributions are trimmed to their non-whitespace core before
+  /// serialization. Underline is excluded because it serializes to HTML tags, and
+  /// links are excluded because link text may legitimately start or end with spaces.
+  static const _trimmableAttributions = [
+    codeAttribution,
+    boldAttribution,
+    italicsAttribution,
+    strikethroughAttribution,
+  ];
 
-  String serialize(AttributedText attributedText) {
-    _fullText = attributedText.toPlainText();
-    _buffer = StringBuffer();
-    _bufferCursor = 0;
-    if (attributedText.toPlainText().isNotEmpty) {
-      attributedText.visitAttributions(this);
+  /// All ASCII punctuation, i.e., every character that supports backslash-escaping
+  /// in markdown. Characters carrying [markdownEscapeAttribution] are re-escaped
+  /// only if they appear in this set.
+  static final _asciiPunctuation = r'''!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~'''.codeUnits.toSet();
+
+  /// The characters that can begin inline markdown syntax. These are escaped in
+  /// non-code text when the serialization fails to round-trip without escaping.
+  static final _markdownSignificantCharacters = '*_`~[]<\\'.codeUnits.toSet();
+
+  /// Inline HTML syntaxes used when re-parsing a candidate serialization, to compare
+  /// it against the original. Extends the default set with a handler that maps hard
+  /// line breaks back to the newline characters they were serialized from.
+  static final _reparseInlineHtmlSyntaxes = [
+    ...defaultInlineHtmlSyntaxes,
+    _lineBreakHtmlSyntax,
+  ];
+
+  String serialize(AttributedText attributedText, {bool escapeLineStartTriggers = false}) {
+    final fullText = attributedText.toPlainText();
+    if (fullText.isEmpty) {
+      return '';
     }
-    return _buffer.toString();
-  }
 
-  @override
-  void visitAttributions(
-    AttributedText fullText,
-    int index,
-    Set<Attribution> startingAttributions,
-    Set<Attribution> endingAttributions,
-  ) {
-    // Write out the text between the end of the last markers, and these new markers.
-    _writeTextToBuffer(
-      fullText.toPlainText().substring(_bufferCursor, index),
+    final trimmed = _withTrimmedStyleSpans(attributedText, fullText);
+
+    final candidate = _serializeSpans(
+      trimmed,
+      fullText,
+      escapeSignificantCharacters: false,
+      escapeLineStartTriggers: escapeLineStartTriggers,
     );
-
-    // Add start markers.
-    if (startingAttributions.isNotEmpty) {
-      final markdownStyles = _sortAndSerializeAttributions(startingAttributions, AttributionVisitEvent.start);
-      // Links are different from the plain styles since they are both not NamedAttributions (and therefore
-      // can't be checked using equality comparison) and asymmetrical in markdown.
-      final linkMarker = _encodeLinkMarker(startingAttributions, AttributionVisitEvent.start);
-
-      _buffer
-        ..write(linkMarker)
-        ..write(markdownStyles);
+    if (_reparsesToSameStyles(candidate, trimmed, fullText)) {
+      return candidate;
     }
 
-    // Write out the character at this index.
-    _writeTextToBuffer(_fullText[index]);
-    _bufferCursor = index + 1;
+    // The un-escaped serialization doesn't survive a round trip, e.g., plain text
+    // like "3*4 and 5*6" would gain emphasis on the next parse. Escape the
+    // markdown-significant characters, and use that version if it round-trips.
+    final escaped = _serializeSpans(
+      trimmed,
+      fullText,
+      escapeSignificantCharacters: true,
+      escapeLineStartTriggers: escapeLineStartTriggers,
+    );
+    return _reparsesToSameStyles(escaped, trimmed, fullText) ? escaped : candidate;
+  }
 
-    // Add end markers.
-    if (endingAttributions.isNotEmpty) {
-      final markdownStyles = _sortAndSerializeAttributions(endingAttributions, AttributionVisitEvent.end);
-      // Links are different from the plain styles since they are both not NamedAttributions (and therefore
-      // can't be checked using equality comparison) and asymmetrical in markdown.
-      final linkMarker = _encodeLinkMarker(endingAttributions, AttributionVisitEvent.end);
+  /// Returns a copy of [text] whose [_trimmableAttributions] spans are shrunk to
+  /// exclude leading/trailing whitespace. Spans that contain only whitespace are
+  /// dropped entirely — markdown has no way to style bare whitespace.
+  AttributedText _withTrimmedStyleSpans(AttributedText text, String fullText) {
+    final spans = text.getAttributionSpansByFilter((_) => true);
+    var changed = false;
+    final rebuiltSpans = AttributedSpans();
+    for (final span in spans) {
+      var start = span.start;
+      var end = span.end.clamp(0, fullText.length - 1);
+      if (_trimmableAttributions.contains(span.attribution)) {
+        while (start <= end && _isWhitespace(fullText.codeUnitAt(start))) {
+          start += 1;
+        }
+        while (end >= start && _isWhitespace(fullText.codeUnitAt(end))) {
+          end -= 1;
+        }
+      }
+      if (start > end) {
+        changed = true;
+        continue;
+      }
+      changed = changed || start != span.start || end != span.end;
+      rebuiltSpans.addAttribution(
+        newAttribution: span.attribution,
+        start: start,
+        end: end,
+        autoMerge: true,
+      );
+    }
+    return changed ? text.replaceAttributions(rebuiltSpans) : text;
+  }
 
-      _buffer
-        ..write(markdownStyles)
-        ..write(linkMarker);
+  String _serializeSpans(
+    AttributedText text,
+    String fullText, {
+    required bool escapeSignificantCharacters,
+    required bool escapeLineStartTriggers,
+  }) {
+    final writer = _MarkdownTextWriter(escapeLineStartTriggers: escapeLineStartTriggers);
+
+    final spans = text.computeAttributionSpans().toList();
+
+    // Attributions that are currently open, in the order they were opened. Styles
+    // are closed innermost-first, and when an outer style has to close while an
+    // inner one continues, the inner style is closed and re-opened, keeping the
+    // markers properly nested.
+    final openAttributions = <Attribution>[];
+
+    for (var spanIndex = 0; spanIndex < spans.length; spanIndex += 1) {
+      final span = spans[spanIndex];
+      final styles = span.attributions.where(_isSerializedInline).toSet();
+      final isEscaped = span.attributions.contains(markdownEscapeAttribution);
+      var spanText = fullText.substring(span.start, span.end + 1);
+
+      // Close styles that end at this boundary, along with any styles that were
+      // opened after them (those are re-opened below).
+      var keepCount = 0;
+      while (keepCount < openAttributions.length && styles.contains(openAttributions[keepCount])) {
+        keepCount += 1;
+      }
+      for (var i = openAttributions.length - 1; i >= keepCount; i -= 1) {
+        writer.writeMarker(_closeMarker(openAttributions[i]));
+        openAttributions.removeAt(i);
+      }
+
+      // Open styles that start (or re-open) at this boundary. The style that
+      // extends furthest opens first so that shorter spans nest inside longer
+      // ones, e.g., bold and italics both starting at "is" in
+      // "This *is a **bold** word*" open as "*is a **bold**", not "**\*is a...".
+      final stylesToOpen = styles.where((attribution) => !openAttributions.contains(attribution)).toList()
+        ..sort((a, b) {
+          final endComparison = _attributionEnd(b, spans, spanIndex).compareTo(_attributionEnd(a, spans, spanIndex));
+          if (endComparison != 0) {
+            return endComparison;
+          }
+          return _stylePriority(a).compareTo(_stylePriority(b));
+        });
+      if (stylesToOpen.any(_trimmableAttributions.contains)) {
+        // Emphasis-like markers can't sit against whitespace. Write any leading
+        // whitespace before the opening markers. Trimming already guarantees this
+        // for span starts; this only happens when an overlapping span forced a
+        // style closed and it re-opens mid-span, e.g., at " e" in "**ab *cd***_ e_".
+        final whitespaceCount = _leadingWhitespaceCount(spanText);
+        if (whitespaceCount > 0) {
+          writer.writeText(spanText.substring(0, whitespaceCount));
+          spanText = spanText.substring(whitespaceCount);
+        }
+      }
+      for (final attribution in stylesToOpen) {
+        writer.writeMarker(_openMarker(attribution));
+        openAttributions.add(attribution);
+      }
+
+      if (spanText.isEmpty) {
+        continue;
+      }
+      if (isEscaped) {
+        // These characters were backslash-escaped in the original markdown.
+        writer.writeText(spanText, escapeCharacters: _asciiPunctuation);
+      } else if (escapeSignificantCharacters && !styles.contains(codeAttribution)) {
+        writer.writeText(spanText, escapeCharacters: _markdownSignificantCharacters);
+      } else {
+        writer.writeText(spanText);
+      }
+    }
+
+    for (var i = openAttributions.length - 1; i >= 0; i -= 1) {
+      writer.writeMarker(_closeMarker(openAttributions[i]));
+    }
+
+    return writer.toString();
+  }
+
+  /// Whether serializing [markdown] and parsing it again produces the styles in
+  /// [expected] — the bar every serialization must meet for styling and text to
+  /// survive a save/load round trip.
+  bool _reparsesToSameStyles(String markdown, AttributedText expected, String expectedText) {
+    AttributedText reparsed;
+    try {
+      reparsed = parseInlineMarkdown(
+        markdown,
+        inlineHtmlSyntaxes: _reparseInlineHtmlSyntaxes,
+      );
+    } catch (_) {
+      return false;
+    }
+
+    if (reparsed.toPlainText() != expectedText) {
+      return false;
+    }
+
+    for (var i = 0; i < expectedText.length; i += 1) {
+      final expectedStyles = expected.getAllAttributionsAt(i).where(_isSerializedInline).toSet();
+      final reparsedStyles = reparsed.getAllAttributionsAt(i).where(_isSerializedInline).toSet();
+      if (!setEquals(expectedStyles, reparsedStyles)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Maps hard line breaks in a re-parsed candidate serialization back to the
+  /// newline they were serialized from, so the comparison in
+  /// [_reparsesToSameStyles] sees the same plain text.
+  static AttributedText? _lineBreakHtmlSyntax(md.Element element, AttributedText text) {
+    if (element.tag != 'br') {
+      return null;
+    }
+    return AttributedText('\n');
+  }
+
+  static bool _isSerializedInline(Attribution attribution) =>
+      attribution == codeAttribution ||
+      attribution == boldAttribution ||
+      attribution == italicsAttribution ||
+      attribution == strikethroughAttribution ||
+      attribution == underlineAttribution ||
+      attribution is LinkAttribution;
+
+  /// The last text offset covered by [attribution], scanning contiguously
+  /// forward from the span at [fromIndex].
+  static int _attributionEnd(Attribution attribution, List<MultiAttributionSpan> spans, int fromIndex) {
+    var end = spans[fromIndex].end;
+    for (var i = fromIndex + 1; i < spans.length; i += 1) {
+      if (!spans[i].attributions.contains(attribution)) {
+        break;
+      }
+      end = spans[i].end;
+    }
+    return end;
+  }
+
+  /// Nesting priority when multiple styles open at the same offset — lower values
+  /// sit outside higher ones.
+  static int _stylePriority(Attribution attribution) {
+    if (attribution is LinkAttribution) {
+      return 0;
+    } else if (attribution == codeAttribution) {
+      return 1;
+    } else if (attribution == boldAttribution) {
+      return 2;
+    } else if (attribution == italicsAttribution) {
+      return 3;
+    } else if (attribution == strikethroughAttribution) {
+      return 4;
+    } else {
+      return 5;
     }
   }
 
-  @override
-  void onVisitEnd() {
-    // When the last span has no attributions, we still have text that wasn't added to the buffer yet.
-    if (_bufferCursor <= _fullText.length - 1) {
-      _writeTextToBuffer(_fullText.substring(_bufferCursor));
+  static String _openMarker(Attribution attribution) {
+    if (attribution is LinkAttribution) {
+      return '[';
+    } else if (attribution == codeAttribution) {
+      return '`';
+    } else if (attribution == boldAttribution) {
+      return '**';
+    } else if (attribution == italicsAttribution) {
+      return '*';
+    } else if (attribution == strikethroughAttribution) {
+      return '~~';
+    } else if (attribution == underlineAttribution) {
+      return '<u>';
+    } else {
+      return '';
     }
   }
 
-  /// Writes the given [text] to [_buffer].
+  static String _closeMarker(Attribution attribution) {
+    if (attribution is LinkAttribution) {
+      return '](${attribution.plainTextUri})';
+    } else if (attribution == underlineAttribution) {
+      return '</u>';
+    } else {
+      return _openMarker(attribution);
+    }
+  }
+
+  static int _leadingWhitespaceCount(String text) {
+    var count = 0;
+    while (count < text.length && _isWhitespace(text.codeUnitAt(count))) {
+      count += 1;
+    }
+    return count;
+  }
+
+  static bool _isWhitespace(int codeUnit) =>
+      codeUnit == 0x20 || codeUnit == 0x09 || codeUnit == 0x0A || codeUnit == 0x0D;
+}
+
+/// Accumulates serialized markdown text, handling hard line breaks, backslash
+/// escaping, and escaping of block-level syntax at line starts.
+class _MarkdownTextWriter {
+  _MarkdownTextWriter({required this.escapeLineStartTriggers});
+
+  /// Whether to backslash-escape characters at the start of a line that would be
+  /// re-interpreted as block-level syntax (headings, list bullets, blockquotes,
+  /// thematic breaks, fences) when the markdown is parsed again.
+  final bool escapeLineStartTriggers;
+
+  final _buffer = StringBuffer();
+  bool _isAtLineStart = true;
+
+  /// Ordered list markers are neutralized by escaping the delimiter after the
+  /// digits ("1\. "), because a backslash before a digit is not an escape.
+  static final _orderedListPattern = RegExp(r'^ {0,3}\d{1,9}[.)][ \t]');
+
+  /// Block-level syntax that a plain paragraph line must not start with. For all
+  /// of these, escaping the first non-space character neutralizes the syntax.
+  static final _blockTriggerPatterns = <RegExp>[
+    RegExp(r'^ {0,3}#{1,6}(?:[ \t]|$)'), // ATX heading
+    RegExp(r'^ {0,3}>'), // blockquote
+    RegExp(r'^ {0,3}[-*+][ \t]'), // bullet list item
+    RegExp(r'^ {0,3}(?:-[ \t]*){3,}$'), // thematic break, e.g. "---"
+    RegExp(r'^ {0,3}(?:\*[ \t]*){3,}$'), // thematic break, e.g. "***"
+    RegExp(r'^ {0,3}(?:_[ \t]*){3,}$'), // thematic break, e.g. "___"
+    RegExp(r'^ {0,3}=+[ \t]*$'), // setext heading underline
+    RegExp(r'^ {0,3}`{3,}'), // code fence
+    RegExp(r'^ {0,3}~{3,}'), // code fence
+  ];
+
+  void writeMarker(String marker) {
+    _buffer.write(marker);
+    if (marker.isNotEmpty) {
+      _isAtLineStart = false;
+    }
+  }
+
+  /// Writes the given [text], escaping any characters whose code units appear in
+  /// [escapeCharacters] with a leading backslash.
   ///
-  /// Separates multiple lines in a single paragraph using two spaces before each line break.
-  ///
-  /// A line ending with two or more spaces represents a hard line break,
-  /// as defined in the Markdown spec.
-  void _writeTextToBuffer(String text) {
+  /// Separates multiple lines in a single paragraph using two spaces before each
+  /// line break. A line ending with two or more spaces represents a hard line
+  /// break, as defined in the Markdown spec.
+  void writeText(String text, {Set<int>? escapeCharacters}) {
     final lines = text.split('\n');
     for (int i = 0; i < lines.length; i++) {
       if (i > 0) {
@@ -481,67 +777,57 @@ class AttributedTextMarkdownSerializer extends AttributionVisitor {
         // the previous paragraph during deserialization.
         _buffer.write('  ');
         _buffer.write('\n');
+        _isAtLineStart = true;
       }
-
-      _buffer.write(lines[i]);
+      _writeLine(lines[i], escapeCharacters);
     }
   }
 
-  /// Serializes style attributions into markdown syntax in a repeatable
-  /// order such that opening and closing styles match each other on
-  /// the opening and closing ends of a span.
-  static String _sortAndSerializeAttributions(Set<Attribution> attributions, AttributionVisitEvent event) {
-    const startOrder = [
-      codeAttribution,
-      boldAttribution,
-      italicsAttribution,
-      strikethroughAttribution,
-      underlineAttribution,
-    ];
-
-    final buffer = StringBuffer();
-    final encodingOrder = event == AttributionVisitEvent.start ? startOrder : startOrder.reversed;
-
-    for (final markdownStyleAttribution in encodingOrder) {
-      if (attributions.contains(markdownStyleAttribution)) {
-        buffer.write(_encodeMarkdownStyle(markdownStyleAttribution));
-      }
+  void _writeLine(String line, Set<int>? escapeCharacters) {
+    if (line.isEmpty) {
+      return;
     }
 
-    return buffer.toString();
-  }
+    var escapeAtIndex = -1;
+    if (_isAtLineStart && escapeLineStartTriggers) {
+      escapeAtIndex = _findBlockTriggerIndex(line);
+    }
 
-  static String _encodeMarkdownStyle(Attribution attribution) {
-    if (attribution == codeAttribution) {
-      return '`';
-    } else if (attribution == boldAttribution) {
-      return '**';
-    } else if (attribution == italicsAttribution) {
-      return '*';
-    } else if (attribution == strikethroughAttribution) {
-      return '~';
-    } else if (attribution == underlineAttribution) {
-      return '¬';
+    if (escapeCharacters == null && escapeAtIndex < 0) {
+      _buffer.write(line);
     } else {
-      return '';
-    }
-  }
-
-  /// Checks for the presence of a link in the attributions and returns the characters necessary to represent it
-  /// at the open or closing boundary of the attribution, depending on the event.
-  static String _encodeLinkMarker(Set<Attribution> attributions, AttributionVisitEvent event) {
-    final linkAttributions = attributions.whereType<LinkAttribution?>();
-    if (linkAttributions.isNotEmpty) {
-      final linkAttribution = linkAttributions.first as LinkAttribution;
-
-      if (event == AttributionVisitEvent.start) {
-        return '[';
-      } else {
-        return '](${linkAttribution.plainTextUri})';
+      for (var i = 0; i < line.length; i += 1) {
+        final codeUnit = line.codeUnitAt(i);
+        if (i == escapeAtIndex || (escapeCharacters?.contains(codeUnit) ?? false)) {
+          _buffer.write(r'\');
+        }
+        _buffer.writeCharCode(codeUnit);
       }
     }
-    return "";
+    _isAtLineStart = false;
   }
+
+  static int _findBlockTriggerIndex(String line) {
+    final orderedListMatch = _orderedListPattern.firstMatch(line);
+    if (orderedListMatch != null) {
+      // Escape the "." or ")" that follows the digits.
+      return orderedListMatch.end - 2;
+    }
+    for (final pattern in _blockTriggerPatterns) {
+      if (pattern.hasMatch(line)) {
+        // Escape the first non-space character.
+        var index = 0;
+        while (index < line.length && line.codeUnitAt(index) == 0x20) {
+          index += 1;
+        }
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  @override
+  String toString() => _buffer.toString();
 }
 
 /// [DocumentNodeMarkdownSerializer], which serializes Markdown headers to

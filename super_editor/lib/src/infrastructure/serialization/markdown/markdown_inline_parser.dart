@@ -36,17 +36,69 @@ AttributedText parseInlineMarkdown(
 }
 
 final defaultSuperEditorInlineSyntaxes = [
+  PreservedEscapeSyntax(), // must run before the markdown package's EscapeSyntax, which discards the backslash
   SingleStrikethroughSyntax(), // this needs to be before md.StrikethroughSyntax to be recognized
   md.StrikethroughSyntax(),
   UnderlineSyntax(),
+  HtmlUnderlineSyntax(),
   SuperEditorImageSyntax(),
 ];
 
 final defaultNonSuperEditorInlineSyntaxes = [
+  PreservedEscapeSyntax(), // must run before the markdown package's EscapeSyntax, which discards the backslash
   SingleStrikethroughSyntax(), // this needs to be before md.StrikethroughSyntax to be recognized
   md.StrikethroughSyntax(),
   UnderlineSyntax(),
+  HtmlUnderlineSyntax(),
 ];
+
+/// Attribution applied to characters that were backslash-escaped in the Markdown
+/// source, e.g., the `*` in "3\*4".
+///
+/// The parser strips the backslash so the user sees the bare character, and the
+/// serializer re-emits the backslash for any character carrying this attribution.
+/// Without it, "3\*4" would save as "3*4" and the markers could be re-interpreted
+/// as emphasis on the next parse.
+const markdownEscapeAttribution = NamedAttribution('markdownEscape');
+
+/// Matches a backslash-escaped ASCII punctuation character, like the markdown
+/// package's own `EscapeSyntax`, but wraps the escaped character in an element
+/// so that the escape survives the round trip as [markdownEscapeAttribution].
+class PreservedEscapeSyntax extends md.InlineSyntax {
+  PreservedEscapeSyntax()
+      : super(
+          r'''\\([!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])''',
+          startCharacter: 0x5C, // backslash
+        );
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element.text('mdEscape', match[1]!));
+    return true;
+  }
+}
+
+/// Matches underline spans written as inline HTML, e.g., "this is <u>underline</u> text".
+///
+/// `<u>text</u>` is the only widely supported way to express underlines in Markdown,
+/// and it's what Super Editor serializes underlines to. The legacy `¬` marker
+/// ([UnderlineSyntax]) is still parsed for backwards compatibility.
+class HtmlUnderlineSyntax extends md.InlineSyntax {
+  HtmlUnderlineSyntax()
+      : super(
+          r'<u>([\s\S]*?)</u>',
+          startCharacter: 0x3C, // '<'
+        );
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    // Parse the inner content so that styles nested within the underline,
+    // e.g., "<u>**bold**</u>", are preserved.
+    final children = md.InlineParser(match[1]!, parser.document).parse();
+    parser.addNode(md.Element('u', children));
+    return true;
+  }
+}
 
 /// Parses inline markdown content.
 ///
@@ -111,6 +163,7 @@ const defaultInlineHtmlSyntaxes = [
   strikethroughHtmlSyntax,
   anchorHtmlSyntax,
   codeInlineHtmlSyntax,
+  escapedCharacterHtmlSyntax,
 ];
 
 typedef InlineHtmlSyntax = AttributedText? Function(md.Element element, AttributedText text);
@@ -183,6 +236,18 @@ AttributedText? codeInlineHtmlSyntax(md.Element element, AttributedText text) {
   return text
     ..addAttribution(
       codeAttribution,
+      SpanRange(0, text.length - 1),
+    );
+}
+
+AttributedText? escapedCharacterHtmlSyntax(md.Element element, AttributedText text) {
+  if (element.tag != 'mdEscape') {
+    return null;
+  }
+
+  return text
+    ..addAttribution(
+      markdownEscapeAttribution,
       SpanRange(0, text.length - 1),
     );
 }
