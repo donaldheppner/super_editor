@@ -533,7 +533,7 @@ void main() {
           expect(
             document,
             equalsMarkdown(
-              "This is the first** node in a document.**",
+              "This is the first **node in a document.**",
             ),
           );
 
@@ -547,7 +547,7 @@ void main() {
           expect(
             document,
             equalsMarkdown(
-              "**This is the first**** node in a document.**",
+              "**This is the first node in a document.**",
             ),
           );
         });
@@ -1276,7 +1276,7 @@ void main() {
           expect(
             document,
             equalsMarkdown(
-              "This is the first **node in a document.**\n\n**This is the second node in a document.**\n\n**This is the third **node in a document.",
+              "This is the first **node in a document.**\n\n**This is the second node in a document.**\n\n**This is the third** node in a document.",
             ),
           );
 
@@ -1415,7 +1415,7 @@ void main() {
           await tester.typeImeText(" bold");
 
           // Ensure the bold attribution is applied.
-          expect(document, equalsMarkdown("This text should be** bold**"));
+          expect(document, equalsMarkdown("This text should be **bold**"));
         });
       });
 
