@@ -199,7 +199,7 @@ class CalloutSerializer implements DocumentNodeMarkdownSerializer {
       return null;
     }
 
-    // No trailing newline: the document serializer owns block separators (NOTE-42).
+    // No trailing newline: the document serializer owns block separators.
     final buffer = StringBuffer();
     buffer.writeln("@@@ callout");
     buffer.writeln(node.text.toMarkdown());

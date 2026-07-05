@@ -531,7 +531,7 @@ a *b* c
         );
 
         // The empty paragraph contributes exactly one newline on top of the
-        // blank-line block separator (NOTE-42).
+        // blank-line block separator.
         expect(serialized, """Paragraph1
 
 
@@ -570,7 +570,7 @@ Paragraph3""");
         );
 
         // Ensure the attributions were ignored for the empty paragraphs.
-        // Each trailing empty paragraph is one trailing newline (NOTE-42).
+        // Each trailing empty paragraph is one trailing newline.
         expect(serialized, """Paragraph1
 
 """);
@@ -612,7 +612,7 @@ Paragraph3""");
 
         // No two-space hard-break markers: consecutive non-blank lines
         // re-parse into the same paragraph, and the markers accumulated one
-        // "  " per line per save (NOTE-42, upstream issue #3006).
+        // "  " per line per save (upstream issue #3006).
         expect(serialized, 'Line1\nLine2');
       });
 
@@ -626,7 +626,7 @@ Paragraph3""");
 
         // Embedded blank lines aren't representable in markdown paragraphs;
         // they re-parse as an empty paragraph (a one-pass, byte-stable
-        // normalization under the NOTE-42 policy).
+        // normalization under the whitespace policy).
         expect(serialized, 'Paragraph1\n\n\n\nParagraph2');
       });
 
@@ -1578,7 +1578,7 @@ Paragraph after the captioned image.''',
         final document = deserializeMarkdownToDocument(markdown);
 
         // 7 list/task nodes, plus one empty paragraph for the fixture's
-        // trailing newline (NOTE-42).
+        // trailing newline.
         expect(document.nodeCount, 8);
         expect(document.getNodeAt(0)!, isA<ListItemNode>());
         expect(document.getNodeAt(1)!, isA<TaskNode>());
@@ -1677,7 +1677,7 @@ Paragraph after the captioned image.''',
         final document = deserializeMarkdownToDocument(markdown);
 
         // 13 list items, plus one empty paragraph for the fixture's trailing
-        // newline (NOTE-42).
+        // newline.
         expect(document.nodeCount, 14);
 
         expect((document.getNodeAt(0)! as ListItemNode).indent, 0);
@@ -1767,7 +1767,7 @@ with multiple lines
         final document = deserializeMarkdownToDocument(exampleMarkdownDoc1);
 
         // 26 content nodes, plus one empty paragraph for the fixture's
-        // trailing newline (NOTE-42).
+        // trailing newline.
         expect(document.nodeCount, 27);
 
         expect(document.getNodeAt(0)!, isA<ParagraphNode>());
@@ -1944,7 +1944,7 @@ Paragraph2""";
 
       test('empty paragraph between paragraphs', () {
         // One blank line separates the blocks; each additional blank line is
-        // one empty paragraph (NOTE-42).
+        // one empty paragraph.
         const input = """Paragraph1
 
 
@@ -1968,7 +1968,7 @@ Paragraph3""";
         final doc = deserializeMarkdownToDocument(input);
 
         // The input ends with "Third item\n\n\n" — three trailing newlines,
-        // so three empty paragraphs (NOTE-42).
+        // so three empty paragraphs.
         expect(doc.nodeCount, 6);
         expect((doc.getNodeAt(0)! as ListItemNode).text.toPlainText(), 'First item');
         expect((doc.getNodeAt(1)! as ListItemNode).text.toPlainText(), 'Second item');
@@ -1994,7 +1994,7 @@ Paragraph4""";
       });
 
       test('hard-break spaces do not pull blank lines into a paragraph', () {
-        // Before NOTE-42, the trailing "  " made the blank line part of the
+        // Previously, the trailing "  " made the blank line part of the
         // first paragraph, embedding a "\n" in its text. Blank lines now
         // always end the paragraph; the extra blank line is an empty
         // paragraph of its own.
@@ -2103,7 +2103,7 @@ First Paragraph.
       });
     });
 
-    group('whitespace policy (NOTE-42)', () {
+    group('whitespace policy', () {
       String roundTrip(String markdown) => serializeDocumentToMarkdown(deserializeMarkdownToDocument(markdown));
 
       test('external two-blank-line input parses to [paragraph, empty, paragraph]', () {
@@ -2165,7 +2165,7 @@ First Paragraph.
       });
 
       test('legacy hard-break soft wrap heals to a plain soft wrap', () {
-        // The pre-NOTE-42 serializer wrote soft wraps as "  \n". Those notes
+        // The old serializer wrote soft wraps as "  \n". Those notes
         // heal in one pass, with no text loss.
         expect(roundTrip('Line one  \nLine two'), 'Line one\nLine two');
       });

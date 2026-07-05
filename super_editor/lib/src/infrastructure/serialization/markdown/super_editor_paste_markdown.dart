@@ -72,7 +72,7 @@ Future<void> pasteMarkdown({
   }
 
   final markdownToPaste = (await Clipboard.getData('text/plain'))?.text ?? '';
-  // Strip trailing newlines: they parse to empty paragraphs (NOTE-42), which a
+  // Strip trailing newlines: they parse to empty paragraphs, which a
   // paste would insert as phantom empty blocks between the pasted content and
   // the text that follows the caret.
   final deserializedMarkdown = deserializeMarkdownToDocument(markdownToPaste.replaceFirst(RegExp(r'(?:\r?\n)+$'), ''));

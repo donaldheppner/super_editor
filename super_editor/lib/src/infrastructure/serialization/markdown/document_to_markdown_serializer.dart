@@ -28,7 +28,7 @@ import 'package:super_editor/src/infrastructure/serialization/markdown/super_edi
 /// To serialize [DocumentNode]s that aren't part of Super Editor's standard serialization,
 /// provide [customNodeSerializers] to serialize those custom nodes.
 ///
-/// ## Whitespace policy (MemNote NOTE-42)
+/// ## Whitespace policy
 ///
 /// This serializer and [deserializeMarkdownToDocument] are exact inverses for
 /// every structure the parser produces. Newlines are owned entirely by this
@@ -670,10 +670,33 @@ class AttributedTextMarkdownSerializer {
   /// exclude leading/trailing whitespace. Spans that contain only whitespace are
   /// dropped entirely — markdown has no way to style bare whitespace.
   AttributedText _withTrimmedStyleSpans(AttributedText text, String fullText) {
-    final spans = text.getAttributionSpansByFilter((_) => true);
+    // Coalesce abutting spans of the same attribution before trimming, so that
+    // trimming sees maximal runs. Editing can leave a bold run stored as two
+    // spans meeting at a space (e.g., after toggling bold off and back on over
+    // part of the run) — trimming each span separately would silently un-style
+    // the space at their internal boundary.
+    final spans = text.getAttributionSpansByFilter((_) => true).toList()
+      ..sort((a, b) => a.start != b.start ? a.start.compareTo(b.start) : a.end.compareTo(b.end));
+    final coalesced = <({Attribution attribution, int start, int end})>[];
+    for (final span in spans) {
+      final previousIndex = coalesced.lastIndexWhere(
+        (candidate) => candidate.attribution == span.attribution && candidate.end + 1 >= span.start,
+      );
+      if (previousIndex >= 0) {
+        final previous = coalesced[previousIndex];
+        coalesced[previousIndex] = (
+          attribution: previous.attribution,
+          start: previous.start,
+          end: span.end > previous.end ? span.end : previous.end,
+        );
+      } else {
+        coalesced.add((attribution: span.attribution, start: span.start, end: span.end));
+      }
+    }
+
     var changed = false;
     final rebuiltSpans = AttributedSpans();
-    for (final span in spans) {
+    for (final span in coalesced) {
       var start = span.start;
       var end = span.end.clamp(0, fullText.length - 1);
       if (_trimmableAttributions.contains(span.attribution)) {

@@ -89,7 +89,7 @@ void main() {
     });
   });
 
-  group("AttributedText markdown round-trips (NOTE-40)", () {
+  group("AttributedText markdown round-trips", () {
     test("bold span with trailing whitespace is trimmed to valid CommonMark", () {
       // A user can select "bold " (including the space) and press the bold
       // button. Serializing the markers around the space would produce
