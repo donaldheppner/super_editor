@@ -9,21 +9,23 @@ patch is a candidate for upstreaming.
 
 The NOTE-40/41/42 codec work below was sliced into six stacked branches
 (`md-codec-1-…` through `md-codec-6-…`, each based on the previous) and staged
-as PRs **on this fork** — one PR per branch, each showing exactly its own
-commit. They are upstream-ready (MemNote ticket references scrubbed, package
-test suite fully green, stack tip byte-identical to the fork's codec), but
-**submitting to Flutter-Bounty-Hunters/super_editor is Don's call — do not open
-upstream PRs without his explicit go-ahead.** (Upstream PRs #3079–#3084 were
-opened prematurely on 2026-07-05 and closed the same day.)
+as PRs **on this fork**, one PR per branch. All six were squash-merged on
+2026-07-05 into the `upstream-main-snapshot` branch, which now carries upstream
+`main` (at 3bb857bc) plus exactly one squashed commit per PR — the clean,
+upstream-ready line (MemNote ticket references scrubbed, package test suite
+fully green, content byte-identical to the fork's codec). **Submitting to
+Flutter-Bounty-Hunters/super_editor is Don's call — do not open upstream PRs
+without his explicit go-ahead.** (Upstream PRs #3079–#3084 were opened
+prematurely on 2026-07-05 and closed the same day.)
 
 | # | Fork branch | Covers | Staged PR | Status |
 |---|-------------|--------|-------------|--------|
-| 1 | `md-codec-1-inline-commonmark` | NOTE-40: whitespace-safe emphasis, escapes, overlapping spans, safety-net escaping, block-trigger escaping, abutting-span coalescing | [fork #2](https://github.com/donaldheppner/super_editor/pull/2) | Staged on fork |
-| 2 | `md-codec-2-standard-inline-markers` | NOTE-40: strikethrough `~~`, underline `<u>` (legacy forms still parsed) | [fork #3](https://github.com/donaldheppner/super_editor/pull/3) | Staged on fork |
-| 3 | `md-codec-3-code-fence-language` | NOTE-41: fence language metadata, literal fence content, trailing-newline strip (resolves upstream #3006) | [fork #4](https://github.com/donaldheppner/super_editor/pull/4) | Staged on fork |
-| 4 | `md-codec-4-list-serialization` | NOTE-41: real ordinals, nesting indent, canonical `- `, no blank line between mixed-type items | [fork #5](https://github.com/donaldheppner/super_editor/pull/5) | Staged on fork |
-| 5 | `md-codec-5-multiline-blockquotes` | NOTE-41: `> ` on every line, parse-side child joining | [fork #6](https://github.com/donaldheppner/super_editor/pull/6) | Staged on fork |
-| 6 | `md-codec-6-whitespace-policy` | NOTE-42: blank-line/empty-paragraph/soft-break policy, central separators, paste trailing-newline strip | [fork #7](https://github.com/donaldheppner/super_editor/pull/7) | Staged on fork |
+| 1 | `md-codec-1-inline-commonmark` | NOTE-40: whitespace-safe emphasis, escapes, overlapping spans, safety-net escaping, block-trigger escaping, abutting-span coalescing | [fork #2](https://github.com/donaldheppner/super_editor/pull/2) | Merged (squash) |
+| 2 | `md-codec-2-standard-inline-markers` | NOTE-40: strikethrough `~~`, underline `<u>` (legacy forms still parsed) | [fork #3](https://github.com/donaldheppner/super_editor/pull/3) | Merged (squash) |
+| 3 | `md-codec-3-code-fence-language` | NOTE-41: fence language metadata, literal fence content, trailing-newline strip (resolves upstream #3006) | [fork #4](https://github.com/donaldheppner/super_editor/pull/4) | Merged (squash) |
+| 4 | `md-codec-4-list-serialization` | NOTE-41: real ordinals, nesting indent, canonical `- `, no blank line between mixed-type items | [fork #5](https://github.com/donaldheppner/super_editor/pull/5) | Merged (squash) |
+| 5 | `md-codec-5-multiline-blockquotes` | NOTE-41: `> ` on every line, parse-side child joining | [fork #6](https://github.com/donaldheppner/super_editor/pull/6) | Merged (squash) |
+| 6 | `md-codec-6-whitespace-policy` | NOTE-42: blank-line/empty-paragraph/soft-break policy, central separators, paste trailing-newline strip | [fork #7](https://github.com/donaldheppner/super_editor/pull/7) | Merged (squash) |
 
 Notes:
 
