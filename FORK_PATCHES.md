@@ -29,10 +29,11 @@ Notes:
 - PR 6 changes default serializer output; its description offers to gate the
   policy behind a `MarkdownSyntax` variant if upstream prefers. If upstream asks
   for that, the fork should adopt the same gated form.
-- Verified NOT fixed by this codec work (probed 2026-07-05, still broken at fork
-  HEAD): upstream #2759 (loose task lists parse with a leading line break and a
-  lost `[x]` state) and #2924 (blank line between list types breaks task
-  parsing). Candidates for future fork/upstream work.
+- Verified NOT fixed by this codec work (probed 2026-07-05): upstream #2759
+  (loose task lists parse with a leading line break and a lost `[x]` state) and
+  #2924 (blank line between list types breaks task parsing). #2759 was
+  subsequently fixed by the NOTE-80 nested-task-list work below; #2924 is still
+  a candidate for future fork/upstream work.
 - If upstream merges the PRs, rebase the fork on upstream `main` and drop the
   corresponding sections below; until then the fork already contains all fixes.
 
@@ -151,6 +152,36 @@ Tests: `super_editor_markdown_test.dart` (group "whitespace policy",
 plus updated serialization/deserialization expectations),
 `super_editor_markdown_pasting_test.dart`, and updated custom serializers in
 `custom_parsers/`.
+
+### Markdown codec: nested task lists (MemNote NOTE-80, upstream #2759)
+
+`super_editor/lib/src/infrastructure/serialization/markdown/markdown_to_document_parsing.dart`
+`super_editor/lib/src/infrastructure/serialization/markdown/document_to_markdown_serializer.dart`
+
+A nested task list did not survive the markdown → `Document` → markdown round
+trip: `- [ ] Task 1\n  - [ ] Task 2` parsed to a *single* `TaskNode` with the
+text `"Task 1Task 2"`, and the nested item's checkbox state was destroyed.
+
+- Parser: a `task-list-item` `<li>` was turned into one `TaskNode` from the
+  element's *recursive* `textContent` — which includes every nested item's text —
+  and its children were then skipped, so a list nested inside the item never
+  produced nodes. `TaskNode` was also always constructed at indent 0. The item's
+  text is now read from its own children only (checkbox and nested lists pruned),
+  the indent comes from the parser's existing list-type stack (the same source
+  `ListItemNode` nesting already uses), and the nested lists are visited so their
+  items get nodes of their own.
+- Serializer: `TaskNodeSerializer` wrote no indent prefix, so even an
+  editor-built nested task list (`TaskNode`s with `indent` 1/2) flattened to a
+  single level on save. It now writes two spaces per indent level — the content
+  column of the parent's `- ` marker.
+- Incidentally fixes upstream #2759: in a *loose* task list the item's text lives
+  in a `p` and the checkbox is inserted there, so reading the `li` naively picked
+  up a leading line break and never found the checkbox. Both the text and the
+  `[x]` state now survive.
+
+Tests: `super_editor_markdown_test.dart` — nested-task parse (task-under-task,
+bullet-under-task, task-under-bullet), indented-`TaskNode` serialization,
+loose task lists, plus nested task cases in the byte-identical round-trip corpus.
 
 ### Deterministic node ids for structured-content paste (MemNote NOTE-44)
 

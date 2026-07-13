@@ -914,6 +914,52 @@ with multiple lines
         expect(serializeDocumentToMarkdown(doc), '- [ ] **Task** 1');
       });
 
+      test('nested tasks', () {
+        final doc = MutableDocument(nodes: [
+          TaskNode(id: '1', text: AttributedText('Task 1'), isComplete: false),
+          TaskNode(id: '2', text: AttributedText('Task 2'), isComplete: false, indent: 1),
+          TaskNode(id: '3', text: AttributedText('Task 3'), isComplete: true, indent: 2),
+          TaskNode(id: '4', text: AttributedText('Task 4'), isComplete: false),
+        ]);
+
+        expect(
+          serializeDocumentToMarkdown(doc),
+          '''
+- [ ] Task 1
+  - [ ] Task 2
+    - [x] Task 3
+- [ ] Task 4''',
+        );
+      });
+
+      test('nested tasks round-trip with their nesting intact', () {
+        final doc = MutableDocument(nodes: [
+          TaskNode(id: '1', text: AttributedText('Task 1'), isComplete: false),
+          TaskNode(id: '2', text: AttributedText('Task 2'), isComplete: true, indent: 1),
+          TaskNode(id: '3', text: AttributedText('Task 3'), isComplete: false, indent: 2),
+          TaskNode(id: '4', text: AttributedText('Task 4'), isComplete: false),
+        ]);
+
+        final markdown = serializeDocumentToMarkdown(doc);
+        final reparsed = deserializeMarkdownToDocument(markdown);
+
+        // Without the indent prefix, all four tasks would serialize at the same
+        // level and the nesting would be lost on the next parse.
+        expect(reparsed.nodeCount, 4);
+        for (var i = 0; i < 4; i += 1) {
+          expect(reparsed.getNodeAt(i)!, isA<TaskNode>());
+        }
+        expect((reparsed.getNodeAt(0)! as TaskNode).indent, 0);
+        expect((reparsed.getNodeAt(1)! as TaskNode).indent, 1);
+        expect((reparsed.getNodeAt(1)! as TaskNode).isComplete, isTrue);
+        expect((reparsed.getNodeAt(2)! as TaskNode).indent, 2);
+        expect((reparsed.getNodeAt(3)! as TaskNode).indent, 0);
+        expect(
+          [for (final node in reparsed) (node as TaskNode).text.toPlainText()],
+          ['Task 1', 'Task 2', 'Task 3', 'Task 4'],
+        );
+      });
+
       test('example doc', () {
         final doc = MutableDocument(nodes: [
           ImageNode(
@@ -1763,6 +1809,108 @@ with multiple lines
         expect((document.getNodeAt(3)! as TaskNode).isComplete, isTrue);
       });
 
+      test('nested tasks', () {
+        const markdown = '''
+- [ ] Task 1
+  - [ ] Task 2
+    - [x] Task 3
+- [x] Task 4''';
+
+        final document = deserializeMarkdownToDocument(markdown);
+
+        // A nested task is a list within the parent task's list item. Its text belongs to
+        // its own node — it must not be merged into the parent task.
+        expect(document.nodeCount, 4);
+        for (final node in document) {
+          expect(node, isA<TaskNode>());
+        }
+
+        expect((document.getNodeAt(0)! as TaskNode).text.toPlainText(), 'Task 1');
+        expect((document.getNodeAt(0)! as TaskNode).indent, 0);
+        expect((document.getNodeAt(0)! as TaskNode).isComplete, isFalse);
+
+        expect((document.getNodeAt(1)! as TaskNode).text.toPlainText(), 'Task 2');
+        expect((document.getNodeAt(1)! as TaskNode).indent, 1);
+        expect((document.getNodeAt(1)! as TaskNode).isComplete, isFalse);
+
+        expect((document.getNodeAt(2)! as TaskNode).text.toPlainText(), 'Task 3');
+        expect((document.getNodeAt(2)! as TaskNode).indent, 2);
+        expect((document.getNodeAt(2)! as TaskNode).isComplete, isTrue);
+
+        expect((document.getNodeAt(3)! as TaskNode).text.toPlainText(), 'Task 4');
+        expect((document.getNodeAt(3)! as TaskNode).indent, 0);
+        expect((document.getNodeAt(3)! as TaskNode).isComplete, isTrue);
+      });
+
+      test('task with a nested bullet list', () {
+        const markdown = '''
+- [ ] Task 1
+  - Bullet 1.1
+- [x] Task 2''';
+
+        final document = deserializeMarkdownToDocument(markdown);
+
+        expect(document.nodeCount, 3);
+
+        expect((document.getNodeAt(0)! as TaskNode).text.toPlainText(), 'Task 1');
+        expect((document.getNodeAt(0)! as TaskNode).indent, 0);
+
+        expect(document.getNodeAt(1)!, isA<ListItemNode>());
+        expect((document.getNodeAt(1)! as ListItemNode).text.toPlainText(), 'Bullet 1.1');
+        expect((document.getNodeAt(1)! as ListItemNode).indent, 1);
+
+        expect((document.getNodeAt(2)! as TaskNode).text.toPlainText(), 'Task 2');
+        expect((document.getNodeAt(2)! as TaskNode).indent, 0);
+        expect((document.getNodeAt(2)! as TaskNode).isComplete, isTrue);
+      });
+
+      test('loose task list keeps its text and checkbox state', () {
+        // A loose list (blank lines between the items) puts the item's text in a `p`, and
+        // the checkbox goes inside that `p` rather than directly under the `li`. Reading
+        // the `li` naively picks up a leading line break and misses the checkbox
+        // entirely — upstream #2759.
+        const markdown = '''
+- [ ] Task 1
+
+- [x] Task 2''';
+
+        final document = deserializeMarkdownToDocument(markdown);
+
+        expect(document.nodeCount, 2);
+
+        expect((document.getNodeAt(0)! as TaskNode).text.toPlainText(), 'Task 1');
+        expect((document.getNodeAt(0)! as TaskNode).isComplete, isFalse);
+
+        expect((document.getNodeAt(1)! as TaskNode).text.toPlainText(), 'Task 2');
+        expect((document.getNodeAt(1)! as TaskNode).isComplete, isTrue);
+      });
+
+      test('bullet list with a nested task list', () {
+        const markdown = '''
+- Bullet 1
+  - [ ] Task 1.1
+  - [x] Task 1.2
+- Bullet 2''';
+
+        final document = deserializeMarkdownToDocument(markdown);
+
+        expect(document.nodeCount, 4);
+
+        expect((document.getNodeAt(0)! as ListItemNode).text.toPlainText(), 'Bullet 1');
+        expect((document.getNodeAt(0)! as ListItemNode).indent, 0);
+
+        expect((document.getNodeAt(1)! as TaskNode).text.toPlainText(), 'Task 1.1');
+        expect((document.getNodeAt(1)! as TaskNode).indent, 1);
+        expect((document.getNodeAt(1)! as TaskNode).isComplete, isFalse);
+
+        expect((document.getNodeAt(2)! as TaskNode).text.toPlainText(), 'Task 1.2');
+        expect((document.getNodeAt(2)! as TaskNode).indent, 1);
+        expect((document.getNodeAt(2)! as TaskNode).isComplete, isTrue);
+
+        expect((document.getNodeAt(3)! as ListItemNode).text.toPlainText(), 'Bullet 2');
+        expect((document.getNodeAt(3)! as ListItemNode).indent, 0);
+      });
+
       test('example doc 1', () {
         final document = deserializeMarkdownToDocument(exampleMarkdownDoc1);
 
@@ -2144,6 +2292,10 @@ First Paragraph.
           '- a\n- b', // tight list
           '- a\n', // list with trailing newline
           '- [ ] todo\n- [x] done', // task list
+          '- [ ] Task 1\n  - [ ] Task 2', // nested task list
+          '- [ ] Task 1\n  - [x] Task 2\n    - [ ] Task 3\n- [ ] Task 4', // 3-level task list
+          '- [ ] Task 1\n  - Bullet\n- [ ] Task 2', // bullets nested under a task
+          '- Bullet\n  - [ ] Task', // a task nested under a bullet
         ];
 
         for (final markdown in cases) {
