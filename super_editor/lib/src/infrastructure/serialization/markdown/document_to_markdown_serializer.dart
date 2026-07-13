@@ -530,6 +530,10 @@ class ParagraphNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<Pa
 ///
 /// A completed task is serialized as `- [x] This is a completed task`
 /// An incomplete task is serialized as `- [ ] This is an incomplete task`
+///
+/// An indented task is prefixed with two spaces per indent level — the content column of
+/// its parent's `- ` marker, which is the column markdown requires for a nested list.
+/// Without the prefix, a nested task list flattens to a single level on the next parse.
 class TaskNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<TaskNode> {
   const TaskNodeSerializer();
 
@@ -552,7 +556,10 @@ class TaskNodeSerializer extends NodeTypedDocumentNodeMarkdownSerializer<TaskNod
         ? node.text.copyText(textSelection.start, textSelection.end)
         : node.text;
 
-    return '- [${node.isComplete ? 'x' : ' '}] ${textToConvert.toMarkdown()}';
+    // A task's marker is always "- ", so every indent level is two columns wide.
+    final indent = '  ' * node.indent;
+
+    return '$indent- [${node.isComplete ? 'x' : ' '}] ${textToConvert.toMarkdown()}';
   }
 }
 

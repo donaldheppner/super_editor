@@ -321,9 +321,15 @@ class _MarkdownToDocument implements md.NodeVisitor {
         if (element.attributes['class'] == 'task-list-item') {
           // We handle task deserialization using the built-in `UnorderedListWithCheckboxSyntax`. It's parsed
           // as a list item with a checkbox input element.
-          _addTask(element);
+          _addTask(element, indent: _listItemTypeStack.length - 1);
 
-          // Skip any child elements because we already added the task node.
+          // Skip this item's remaining children, because `_addTask` already consumed the
+          // item's own text — visiting them would add it to the document a second time.
+          //
+          // A task item can contain a nested list, though, and those nested items need
+          // nodes of their own. They're the one kind of child we can't skip, so visit them
+          // explicitly.
+          _visitSubLists(element);
           return false;
         }
 
@@ -543,22 +549,72 @@ class _MarkdownToDocument implements md.NodeVisitor {
     );
   }
 
-  void _addTask(md.Element element) {
-    bool checked = false;
-    if (element.children != null && //
-        element.children!.isNotEmpty &&
-        element.children!.first is md.Element &&
-        (element.children!.first as md.Element).tag == 'input') {
-      checked = (element.children!.first as md.Element).attributes['checked'] == 'true';
-    }
+  void _addTask(md.Element element, {required int indent}) {
+    final checkbox = _findTaskCheckbox(element);
 
     _content.add(
       TaskNode(
         id: Editor.createNodeId(),
-        text: _parseInlineText(element.textContent),
-        isComplete: checked,
+        text: _parseInlineText(_taskItemText(element)),
+        isComplete: checkbox?.attributes['checked'] == 'true',
+        indent: indent,
       ),
     );
+  }
+
+  /// Visits the lists nested within [element], which is a list item.
+  ///
+  /// This is for list items whose children are otherwise skipped: a nested list still has
+  /// to produce nodes for its items, or those items would be dropped from the document.
+  void _visitSubLists(md.Element element) {
+    for (final child in element.children ?? const <md.Node>[]) {
+      if (child is md.Element && (child.tag == 'ul' || child.tag == 'ol')) {
+        child.accept(this);
+      }
+    }
+  }
+
+  /// Finds the checkbox that the Markdown task list syntax injects into a task item.
+  ///
+  /// The checkbox is an `input` element. In a tight list it's a direct child of the `li`.
+  /// In a loose list the item's text lives in a `p`, and the checkbox is inserted there.
+  md.Element? _findTaskCheckbox(md.Element element) {
+    for (final child in element.children ?? const <md.Node>[]) {
+      if (child is! md.Element) {
+        continue;
+      }
+      if (child.tag == 'input') {
+        return child;
+      }
+      if (child.tag == 'p') {
+        final checkbox = _findTaskCheckbox(child);
+        if (checkbox != null) {
+          return checkbox;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// The text of the task item [node], excluding its checkbox and any list nested within
+  /// it.
+  ///
+  /// A list nested inside a task item is part of that item's subtree, so the item's
+  /// `textContent` includes the text of every nested item — using it directly would merge
+  /// a whole nested task list into its parent task. The nested items produce their own
+  /// nodes (see [_visitSubLists]), so their text is pruned here.
+  String _taskItemText(md.Node node) {
+    if (node is! md.Element) {
+      return node.textContent;
+    }
+    if (_nonTaskTextTags.contains(node.tag)) {
+      return '';
+    }
+    final children = node.children;
+    if (children == null) {
+      return node.textContent;
+    }
+    return children.map(_taskItemText).join();
   }
 
   void _addTable(md.Element element) {
@@ -1121,6 +1177,10 @@ class _InlineMarkdownImageVisitor implements md.NodeVisitor {
   @override
   void visitElementAfter(md.Element element) {}
 }
+
+/// The tags within a task item that hold no text of the task itself: the item's checkbox,
+/// and any list nested within the item (whose items are separate nodes).
+const _nonTaskTextTags = {'input', 'ul', 'ol'};
 
 /// Matches empty lines or lines containing only whitespace.
 final _blankLinePattern = RegExp(r'^(?:[ \t]*)$');
