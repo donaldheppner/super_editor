@@ -239,6 +239,51 @@ Tests: MemNote's `markdown_copy_test.dart` (copy/cut through
 Tests: `ime_android_exceptional_cases_test.dart` — "on Pixel 11 Pro (Android 17) >
 ignores an insertion whose offset maps into the invisible prefix".
 
+### Selection leaders layer: guard both ends of the selection (MemNote NOTE-111)
+
+`super_editor/lib/src/infrastructure/documents/selection_leader_document_layer.dart`
+
+- `_SelectionLeadersDocumentLayerState.computeLayoutDataWithDocumentLayout` checked
+  that the selection's *extent* still resolved to a component, then fell through to
+  the expanded-selection branch and asked the document for
+  `selectUpstreamPosition(base, extent)` — which throws
+  `Exception: No such position in document` when the *base* node is gone. The crash
+  window is therefore exactly an expanded selection whose base node was removed while
+  its extent node survived; a collapsed selection can't reach it, which fits the low
+  event count (MemNote Crashlytics, macOS 0.5.1, 4 events). It fires inside
+  `LayoutBuilder`'s layout callback, where a throw is a fatal frame error, not a
+  recoverable one. Both ends are now checked against the document before the expanded
+  branch runs, in the method's existing "momentary transitive state → return null"
+  idiom.
+- The three `getRectForPosition(...)!` null-assertions in the same method (one on the
+  collapsed branch, two on the expanded branch) became `return null` instead.
+  `DocumentLayout.getRectForPosition` is declared nullable on the interface, its null
+  case *is* this same transitive state ("could not find any component for node
+  position", which it already logs), and `doBuild` renders `const SizedBox()` for null
+  layout data — so returning null degrades to one frame without leaders and
+  self-corrects, whereas `!` turns the same condition into a fatal. No behavior change
+  when the rects resolve.
+- The throwing contract of `getAffinityBetween` / `selectUpstreamPosition` /
+  `selectDownstreamPosition` in `core/document_selection.dart` is deliberately left
+  alone: callers do depend on it, and the layers are the right place to tolerate a
+  selection that is one frame behind the document. `SingleColumnLayoutSelectionStyler`
+  already `try`/`catch`es `getNodesInside` for exactly this reason.
+- **Genuine upstream candidate**, not a MemNote-specific behavior change: upstream's
+  own guard is right there, one endpoint short, and the fix keeps upstream's stated
+  intent. Not yet submitted upstream.
+- **Not fixed here**: `AndroidControlsDocumentLayerState` and
+  `IosControlsDocumentLayerState` (`infrastructure/platforms/{android,ios}/…`) have the
+  same expanded branch with *no* endpoint guard at all, and
+  `_AndroidDocumentTouchInteractorState._ensureSelectionExtentIsVisible` null-checks
+  `getRectForSelection(...)!` on the same stale selection. Verified by running this
+  patch's test with `testWidgetsOnAllPlatforms`: macOS/Windows/Linux pass, Android and
+  iOS still throw. Same crash class, different (mobile-only) layers — a separate change.
+
+Tests: `super_editor/test/super_editor/supereditor_selection_test.dart` — group
+"SuperEditor selection > with a stale selection", which removes the base node of an
+expanded selection without updating the selection and pumps a frame. Verified to fail
+with the production exception when the `lib/` change is reverted.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

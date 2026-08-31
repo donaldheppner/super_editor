@@ -1223,6 +1223,76 @@ Second Paragraph
       expect(selectionNotificationCount, 0);
       expect(selectionChangeCount, 0);
     });
+
+    group("with a stale selection", () {
+      // A document can lose a node while the composer's selection still points at
+      // it, e.g. an app replaces a node in place, or a selection change lands one
+      // frame behind a document change. The selection layers run during layout,
+      // where a throw is fatal, so they have to tolerate that momentary state and
+      // wait for the selection to catch up (MemNote NOTE-111).
+      testWidgetsOnArbitraryDesktop("doesn't crash when the base node of an expanded selection is removed",
+          (tester) async {
+        final testContext = await tester //
+            .createDocument()
+            .withCustomContent(
+              MutableDocument(
+                nodes: [
+                  ParagraphNode(id: '1', text: AttributedText('First paragraph')),
+                  ParagraphNode(id: '2', text: AttributedText('Second paragraph')),
+                ],
+              ),
+            )
+            .withSelection(
+              const DocumentSelection(
+                base: DocumentPosition(nodeId: '1', nodePosition: TextNodePosition(offset: 0)),
+                extent: DocumentPosition(nodeId: '2', nodePosition: TextNodePosition(offset: 6)),
+              ),
+            )
+            .pump();
+
+        // Remove the node that holds the selection base, leaving the extent's node
+        // in place, and don't update the selection. The extent still resolves, so
+        // an extent-only guard lets the layer run and then throw on the base.
+        testContext.findEditContext().editor.execute([
+          DeleteNodeRequest(nodeId: '1'),
+        ]);
+        await tester.pump();
+
+        // Ensure the layer degraded to no leaders instead of throwing
+        // "No such position in document" during the layout pass.
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgetsOnArbitraryDesktop("doesn't crash when the extent node of an expanded selection is removed",
+          (tester) async {
+        final testContext = await tester //
+            .createDocument()
+            .withCustomContent(
+              MutableDocument(
+                nodes: [
+                  ParagraphNode(id: '1', text: AttributedText('First paragraph')),
+                  ParagraphNode(id: '2', text: AttributedText('Second paragraph')),
+                ],
+              ),
+            )
+            .withSelection(
+              const DocumentSelection(
+                base: DocumentPosition(nodeId: '1', nodePosition: TextNodePosition(offset: 0)),
+                extent: DocumentPosition(nodeId: '2', nodePosition: TextNodePosition(offset: 6)),
+              ),
+            )
+            .pump();
+
+        // The mirror image of the test above, which the pre-existing extent guard
+        // already covered.
+        testContext.findEditContext().editor.execute([
+          DeleteNodeRequest(nodeId: '2'),
+        ]);
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+      });
+    });
   });
 }
 

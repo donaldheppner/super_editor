@@ -97,18 +97,41 @@ class _SelectionLeadersDocumentLayerState
       return null;
     }
 
+    if (widget.document.getNodeById(documentSelection.base.nodeId) == null ||
+        widget.document.getNodeById(documentSelection.extent.nodeId) == null) {
+      // The same momentary transitive state as above, seen from the document instead
+      // of the layout: a node that the selection points at is already gone. The
+      // expanded branch below asks the document for the affinity between the base and
+      // the extent, which throws "No such position in document" when either node is
+      // missing. Guarding only the extent, as above, left an expanded selection whose
+      // base node was removed crashing during the layout phase (MemNote NOTE-111).
+      return null;
+    }
+
     if (documentSelection.isCollapsed) {
-      return DocumentSelectionLayout(
-        caret: documentLayout.getRectForPosition(documentSelection.extent)!,
-      );
+      final caret = documentLayout.getRectForPosition(documentSelection.extent);
+      if (caret == null) {
+        // A position can resolve to a component whose rect isn't available yet, mid
+        // re-layout. That's the same transitive state - wait for the next frame.
+        return null;
+      }
+
+      return DocumentSelectionLayout(caret: caret);
     } else {
+      final upstream = documentLayout.getRectForPosition(
+        widget.document.selectUpstreamPosition(documentSelection.base, documentSelection.extent),
+      );
+      final downstream = documentLayout.getRectForPosition(
+        widget.document.selectDownstreamPosition(documentSelection.base, documentSelection.extent),
+      );
+      if (upstream == null || downstream == null) {
+        // Same as the collapsed case - one of the selection bounds has no rect yet.
+        return null;
+      }
+
       return DocumentSelectionLayout(
-        upstream: documentLayout.getRectForPosition(
-          widget.document.selectUpstreamPosition(documentSelection.base, documentSelection.extent),
-        )!,
-        downstream: documentLayout.getRectForPosition(
-          widget.document.selectDownstreamPosition(documentSelection.base, documentSelection.extent),
-        )!,
+        upstream: upstream,
+        downstream: downstream,
         expandedSelectionBounds: documentLayout.getRectForSelection(
           documentSelection.base,
           documentSelection.extent,
