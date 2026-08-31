@@ -1229,8 +1229,10 @@ Second Paragraph
       // it, e.g. an app replaces a node in place, or a selection change lands one
       // frame behind a document change. The selection layers run during layout,
       // where a throw is fatal, so they have to tolerate that momentary state and
-      // wait for the selection to catch up (MemNote NOTE-111).
-      testWidgetsOnArbitraryDesktop("doesn't crash when the base node of an expanded selection is removed",
+      // wait for the selection to catch up (MemNote NOTE-111 for the desktop
+      // leaders layer, NOTE-116 for the Android and iOS controls layers and the
+      // touch interactors' deferred "reveal the selection extent" callback).
+      testWidgetsOnAllPlatforms("doesn't crash when the base node of an expanded selection is removed",
           (tester) async {
         final testContext = await tester //
             .createDocument()
@@ -1263,7 +1265,7 @@ Second Paragraph
         expect(tester.takeException(), isNull);
       });
 
-      testWidgetsOnArbitraryDesktop("doesn't crash when the extent node of an expanded selection is removed",
+      testWidgetsOnAllPlatforms("doesn't crash when the extent node of an expanded selection is removed",
           (tester) async {
         final testContext = await tester //
             .createDocument()
@@ -1283,8 +1285,9 @@ Second Paragraph
             )
             .pump();
 
-        // The mirror image of the test above, which the pre-existing extent guard
-        // already covered.
+        // The mirror image of the test above. The desktop leaders layer's
+        // pre-existing extent guard already covered this case; the Android and iOS
+        // controls layers had no endpoint guard at all, so they threw on it too.
         testContext.findEditContext().editor.execute([
           DeleteNodeRequest(nodeId: '2'),
         ]);

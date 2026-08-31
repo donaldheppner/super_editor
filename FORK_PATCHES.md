@@ -271,18 +271,17 @@ ignores an insertion whose offset maps into the invisible prefix".
 - **Genuine upstream candidate**, not a MemNote-specific behavior change: upstream's
   own guard is right there, one endpoint short, and the fix keeps upstream's stated
   intent. Not yet submitted upstream.
-- **Not fixed here**: `AndroidControlsDocumentLayerState` and
-  `IosControlsDocumentLayerState` (`infrastructure/platforms/{android,ios}/…`) have the
-  same expanded branch with *no* endpoint guard at all, and
-  `_AndroidDocumentTouchInteractorState._ensureSelectionExtentIsVisible` null-checks
-  `getRectForSelection(...)!` on the same stale selection. Verified by running this
-  patch's test with `testWidgetsOnAllPlatforms`: macOS/Windows/Linux pass, Android and
-  iOS still throw. Same crash class, different (mobile-only) layers — a separate change.
+- **Not fixed here, fixed in NOTE-116 below**: `AndroidControlsDocumentLayerState`,
+  `IosControlsDocumentLayerState`, and the two touch interactors'
+  `_ensureSelectionExtentIsVisible` had the same crash class on the mobile-only paths
+  this patch doesn't reach. That's why this patch's test was originally pinned to
+  `testWidgetsOnArbitraryDesktop`; NOTE-116 widened it to `testWidgetsOnAllPlatforms`.
 
 Tests: `super_editor/test/super_editor/supereditor_selection_test.dart` — group
 "SuperEditor selection > with a stale selection", which removes the base node of an
-expanded selection without updating the selection and pumps a frame. Verified to fail
-with the production exception when the `lib/` change is reverted.
+expanded selection without updating the selection and pumps a frame. Runs on all
+platforms (desktop-only until NOTE-116 fixed the mobile layers). Verified to fail with
+the production exception on macOS/Windows/Linux when this `lib/` change is reverted.
 
 ### IME delta path: a throw must not permanently disable IME re-sync (MemNote NOTE-115)
 
@@ -376,6 +375,115 @@ Tests: `super_editor/test/super_editor/text_entry/ime/ime_typing_test.dart` — 
    `_isApplyingDeltas` and `_isSendingToIme` were cleared. Verified to fail against the
    `finally`-based version of the fix: `Expected: <Instance of '_DeltaApplicationException'>
    Actual: _TypeError:<Null check operator used on a null value>`.
+
+### Android/iOS controls layers: guard both ends of the selection (MemNote NOTE-116)
+
+`super_editor/lib/src/infrastructure/platforms/android/android_document_controls.dart`,
+`super_editor/lib/src/infrastructure/platforms/ios/ios_document_controls.dart`,
+`super_editor/lib/src/default_editor/document_gestures_touch_android.dart`,
+`super_editor/lib/src/default_editor/document_gestures_touch_ios.dart`,
+`super_editor/lib/src/chat/super_message_android_overlays.dart`
+
+- NOTE-111 above fixed the *desktop* selection leaders layer.
+  `AndroidControlsDocumentLayerState.computeLayoutDataWithDocumentLayout` and
+  `IosControlsDocumentLayerState.computeLayoutDataWithDocumentLayout` carry the identical
+  expanded branch — `getRectForPosition(document.selectUpstreamPosition(base, extent))!` —
+  and had *no* endpoint guard at all, not even the extent-only one NOTE-111 started from.
+  The same stale selection therefore throws `Exception: No such position in document` out
+  of `getAffinityBetween`, again from inside the `ContentLayers` layout pass
+  (`RenderSliverContentLayers.performLayout` → `ContentLayersElement.buildLayers` →
+  `ContentLayerState.build`), where a throw is a fatal frame error rather than something
+  the framework can recover from. Both endpoints are now checked against the document
+  before *either* branch runs, in the same "momentary transitive state → return null"
+  idiom; `doBuild` on both layers already renders `const SizedBox()` for null layout data.
+- Confirmed rather than assumed. Widening NOTE-111's test to `testWidgetsOnAllPlatforms`
+  *before* touching `lib/` gave 6 passes and 4 failures: on Android and iOS, on both the
+  base-removed and the extent-removed case, the run reports `_Exception ... thrown building
+  AndroidHandlesDocumentLayer` / `IosHandlesDocumentLayer` with `Exception: No such
+  position in document: [DocumentPosition] - node: "1"`, plus a second, independent
+  `_TypeError: Null check operator used on a null value` from
+  `_ensureSelectionExtentIsVisible`. Note the mobile layers fail on the *extent*-removed
+  case too, which desktop never did — the extent-only guard NOTE-111 inherited simply isn't
+  there.
+- The sibling force-unwraps on the same two methods became null checks, for the reason
+  NOTE-111 gives: `getEdgeForPosition` / `getRectForPosition` / `getRectForSelection` are
+  all declared nullable on `DocumentLayout`, and their null case *is* this same transitive
+  state — the node resolves in the document while the layout has no component for it yet
+  (it already logs "Could not find any component for node position"). The document-level
+  guard cannot subsume them: they answer a different question, about the *layout* rather
+  than the document, and the two are allowed to be a frame apart in either direction. `!`
+  turned a one-frame gap into a fatal; `return null` costs one frame of handles and
+  self-corrects. No behavior change when the rects resolve.
+- **Judgement call — iOS's `_computeRectForExpandedHandle` now returns `Rect?`, and its
+  pre-existing `Rect.zero` fallback goes with it.** The method had two `!`s of its own
+  (`getRectForPosition(position)!` and `getRectForSelection(...)!`) plus an early
+  `return Rect.zero` when the position's component is missing. All three are the same
+  condition — the layout can't place this position right now — so answering `Rect.zero` for
+  one and throwing for the other two was incoherent. `Rect.zero` is not a handle position
+  anyone wants: it pins the handle to the document origin, visibly detached from the
+  selection. Returning null for all three and letting the caller skip the frame is both
+  consistent and the better degradation. This is the one place where behavior changes on a
+  path that previously didn't throw, and it costs a frame of handles in a state that was
+  already drawing a wrong one.
+- **Judgement call — `_ensureSelectionExtentIsVisible` is hardened, on iOS as well as
+  Android.** The ticket flagged the Android copy; the iOS copy
+  (`document_gestures_touch_ios.dart`) is line-for-line the same and fails in the same run,
+  so both are fixed. This one is *not* a layout callback — it runs from `onNextFrame` after
+  a document or selection change — so a throw here is an uncaught scheduler-callback error,
+  not a fatal frame error. It's still worth fixing, and the fix isn't merely defensive: the
+  method's whole job is the best-effort "scroll so the selection extent is visible", and
+  when the selection names a node the document has dropped there is nothing to scroll to,
+  so doing nothing is the *correct* answer rather than a fallback. The next selection change
+  schedules another one. The Android copy already establishes exactly this idiom, with its
+  `!mounted` / detached-render-object early returns from NOTE-29.
+- It needs two guards, not one. Null-checking `getRectForSelection(...)!` alone would leave
+  `document.getAffinityForSelection(selection)` on the next line throwing `No such position
+  in document`, and that call keys off the *document* while `getRectForSelection` keys off
+  the *layout* — a component can outlive its node by a frame, so the rect can resolve when
+  the affinity can't. The document-level endpoint check therefore comes first and the rect
+  null check second. Neither is redundant with the other, and neither is redundant with the
+  layer guards above: this method reads the document and the layout directly, not through a
+  layer.
+- **Deliberately left alone**: `widget.dragHandleAutoScroller.value!` at the end of the
+  Android copy (iOS uses `?.` there). It is a force-unwrap on the same method, but it is not
+  this crash class — it fails on a missing auto-scroller, not on a stale selection — and the
+  inconsistency between the two platforms should be settled on its own evidence. Also left
+  alone, as in NOTE-111: the throwing contract of `getAffinityBetween` /
+  `selectUpstreamPosition` / `selectDownstreamPosition`, and the many `getRectFor…(...)!`
+  unwraps in `long_press_selection.dart`, `drag_handle_selection.dart` and the interactors'
+  drag paths. Those run from gesture handlers against a selection the user is actively
+  dragging, not from a layout or deferred callback against a selection that may be a frame
+  stale, so they are not the same defect.
+- Checked, because returning null from a path that previously always produced a value is the
+  risk this change introduces: nothing consumes these layers' `layoutData` non-null. Both
+  layers already return null for three earlier conditions (no selection, handles not
+  allowed, and no `DocumentLayout` in `DocumentLayoutLayerState.computeLayoutData`), so the
+  null path is the routine one and `doBuild` handles it. The only external readers are the
+  `@visibleForTesting` getters on the layer states (`caret`, `isCaretDisplayed`,
+  `isUpstreamHandleDisplayed`, `isDownstreamHandleDisplayed`), all of which already read
+  through `layoutData?.`, and `SuperEditorInspector` reaches them through those same
+  getters. The iOS toolbar focal point is a separate layer
+  (`IosToolbarFocalPointDocumentLayer`), unaffected by these layers skipping a frame.
+- **Beyond the ticket's scope, deliberately**:
+  `SuperMessageAndroidControlsDocumentLayerState` in `chat/super_message_android_overlays.dart`
+  is a verbatim copy of the Android controls layer, defect included, so it got the same
+  two guards. MemNote doesn't use `SuperMessage` and the acceptance test doesn't reach this
+  class, so this one is argued from the code being identical rather than from an observed
+  failure. The iOS chat overlays reuse `IosHandlesDocumentLayer` and inherit the fix; the
+  chat touch interactors have no `_ensureSelectionExtentIsVisible`, so there is no third
+  copy of that half.
+- **Genuine upstream candidate**, for the same reason NOTE-111 is: the same defect on the
+  same widget family, it keeps upstream's stated intent, and it changes nothing when the
+  document and the selection agree. Not yet submitted upstream.
+
+Tests: NOTE-111's group in `super_editor/test/super_editor/supereditor_selection_test.dart`
+— "SuperEditor selection > with a stale selection" — widened from
+`testWidgetsOnArbitraryDesktop` to `testWidgetsOnAllPlatforms`. That widening is the whole
+acceptance check: 6 passing / 4 failing before the `lib/` change (the four mobile variants,
+with the two exceptions quoted above), 10 passing after. The fork suite goes from 5649 to
+5657 passing, 7 skipped either way — `testWidgetsOnArbitraryDesktop` emits *one* test per
+call (it picks one desktop platform), `testWidgetsOnAllPlatforms` emits five, so two calls
+go from 2 tests to 10.
 
 ## App-specific (not for upstream)
 

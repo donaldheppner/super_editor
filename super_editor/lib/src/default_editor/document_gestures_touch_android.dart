@@ -683,10 +683,26 @@ class _AndroidDocumentTouchInteractorState extends State<AndroidDocumentTouchInt
       return;
     }
 
+    if (widget.document.getNodeById(selection.base.nodeId) == null ||
+        widget.document.getNodeById(selection.extent.nodeId) == null) {
+      // The selection still points at a node that the document has already dropped -
+      // this callback is deferred to the end of a frame, so a document change can land
+      // before the selection catches up. There's nothing to reveal, and
+      // getAffinityForSelection below would throw "No such position in document". The
+      // selection change that follows schedules this again (NOTE-116).
+      return;
+    }
+
     // Calculate the y-value of the selection extent side of the selected content so that we
     // can ensure they're visible.
     final selectionRectInDocumentLayout =
-        widget.getDocumentLayout().getRectForSelection(selection.base, selection.extent)!;
+        widget.getDocumentLayout().getRectForSelection(selection.base, selection.extent);
+    if (selectionRectInDocumentLayout == null) {
+      // The nodes are still in the document, but the layout has no components for them
+      // yet. Same as above: nothing to reveal, try again on the next change.
+      return;
+    }
+
     final extentOffsetInViewport = widget.document.getAffinityForSelection(selection) == TextAffinity.downstream
         ? _documentOffsetToViewportOffset(selectionRectInDocumentLayout.bottomCenter)
         : _documentOffsetToViewportOffset(selectionRectInDocumentLayout.topCenter);

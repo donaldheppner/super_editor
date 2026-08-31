@@ -695,10 +695,14 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
   /// top and bottom of the selection hightlight box. This method computes an
   /// expanded selection based on the given [position], computes the box for that
   /// selection, and returns the edge of the selection box.
-  Rect _computeRectForExpandedHandle(DocumentPosition position) {
+  ///
+  /// Returns `null` when the layout can't currently place [position], which happens
+  /// in the momentary transitive state where the document layout hasn't caught up
+  /// with the document. Callers should skip the frame rather than guess a rect.
+  Rect? _computeRectForExpandedHandle(DocumentPosition position) {
     final component = widget.documentLayout.getComponentByNodeId(position.nodeId);
     if (component == null) {
-      return Rect.zero;
+      return null;
     }
 
     // Check if we have a position to the right of the current position within the same node.
@@ -716,7 +720,7 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
       // to rect for the position, which relies on Flutter's computation for the
       // caret offset and height. Flutter's computation produces different offset
       // a height from what is returned by the selection highlight box.
-      return widget.documentLayout.getRectForPosition(position)!;
+      return widget.documentLayout.getRectForPosition(position);
     }
 
     final rectForSelection = widget.documentLayout.getRectForSelection(
@@ -725,7 +729,10 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
         nodeId: position.nodeId,
         nodePosition: extentNodePosition,
       ),
-    )!;
+    );
+    if (rectForSelection == null) {
+      return null;
+    }
 
     return Rect.fromLTWH(
       isExtentDownstream ? rectForSelection.left : rectForSelection.right,
@@ -748,8 +755,28 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
       return null;
     }
 
+    if (widget.document.getNodeById(selection.base.nodeId) == null ||
+        widget.document.getNodeById(selection.extent.nodeId) == null) {
+      // Assume that we're in a momentary transitive state where the selection still
+      // points at a node that the document has already dropped. We expect this method
+      // to run again in a moment, with a selection that has caught up.
+      //
+      // The expanded branch below asks the document for the affinity between the base
+      // and the extent, which throws "No such position in document" when either node
+      // is missing, and this method runs during layout, where a throw is a fatal frame
+      // error rather than something the framework can recover from.
+      return null;
+    }
+
     if (selection.isCollapsed) {
-      Rect caretRect = documentLayout.getEdgeForPosition(selection.extent)!;
+      final caretEdge = documentLayout.getEdgeForPosition(selection.extent);
+      if (caretEdge == null) {
+        // The node is still in the document, but the layout has no component for it
+        // yet. That's the same transitive state - wait for the next frame.
+        return null;
+      }
+
+      Rect caretRect = caretEdge;
 
       // Default caret width used by IOSCollapsedHandle.
       const caretWidth = 2;
@@ -794,13 +821,21 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
         caret: caretRect,
       );
     } else {
+      final upstream = _computeRectForExpandedHandle(
+        widget.document.selectUpstreamPosition(selection.base, selection.extent),
+      );
+      final downstream = _computeRectForExpandedHandle(
+        widget.document.selectDownstreamPosition(selection.base, selection.extent),
+      );
+      if (upstream == null || downstream == null) {
+        // Same as the collapsed case - a selection bound resolves in the document but
+        // has no rect in the layout yet.
+        return null;
+      }
+
       return DocumentSelectionLayout(
-        upstream: _computeRectForExpandedHandle(
-          widget.document.selectUpstreamPosition(selection.base, selection.extent),
-        ),
-        downstream: _computeRectForExpandedHandle(
-          widget.document.selectDownstreamPosition(selection.base, selection.extent),
-        ),
+        upstream: upstream,
+        downstream: downstream,
         expandedSelectionBounds: documentLayout.getRectForSelection(
           selection.base,
           selection.extent,

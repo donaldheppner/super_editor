@@ -334,8 +334,28 @@ class AndroidControlsDocumentLayerState
       return null;
     }
 
+    if (widget.document.getNodeById(selection.base.nodeId) == null ||
+        widget.document.getNodeById(selection.extent.nodeId) == null) {
+      // Assume that we're in a momentary transitive state where the selection still
+      // points at a node that the document has already dropped. We expect this method
+      // to run again in a moment, with a selection that has caught up.
+      //
+      // The expanded branch below asks the document for the affinity between the base
+      // and the extent, which throws "No such position in document" when either node
+      // is missing, and this method runs during layout, where a throw is a fatal frame
+      // error rather than something the framework can recover from.
+      return null;
+    }
+
     if (selection.isCollapsed && !_controlsController!.shouldShowExpandedHandles.value) {
-      Rect caretRect = documentLayout.getEdgeForPosition(selection.extent)!;
+      final caretEdge = documentLayout.getEdgeForPosition(selection.extent);
+      if (caretEdge == null) {
+        // The node is still in the document, but the layout has no component for it
+        // yet. That's the same transitive state - wait for the next frame.
+        return null;
+      }
+
+      Rect caretRect = caretEdge;
 
       // Default caret width used by the Android caret.
       const caretWidth = 2;
@@ -383,13 +403,21 @@ class AndroidControlsDocumentLayerState
         caret: caretRect,
       );
     } else {
+      final upstream = documentLayout.getRectForPosition(
+        widget.document.selectUpstreamPosition(selection.base, selection.extent),
+      );
+      final downstream = documentLayout.getRectForPosition(
+        widget.document.selectDownstreamPosition(selection.base, selection.extent),
+      );
+      if (upstream == null || downstream == null) {
+        // Same as the collapsed case - a selection bound resolves in the document but
+        // has no rect in the layout yet.
+        return null;
+      }
+
       return DocumentSelectionLayout(
-        upstream: documentLayout.getRectForPosition(
-          widget.document.selectUpstreamPosition(selection.base, selection.extent),
-        )!,
-        downstream: documentLayout.getRectForPosition(
-          widget.document.selectDownstreamPosition(selection.base, selection.extent),
-        )!,
+        upstream: upstream,
+        downstream: downstream,
         expandedSelectionBounds: documentLayout.getRectForSelection(
           selection.base,
           selection.extent,
