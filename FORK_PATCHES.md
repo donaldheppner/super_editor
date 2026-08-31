@@ -218,6 +218,27 @@ Candidate for upstreaming, likely reshaped as an instance-level or
 Tests: MemNote's `markdown_copy_test.dart` (copy/cut through
 `CommonEditorOperations` with a mocked clipboard).
 
+### IME insertion guard: don't crash on an unmappable insertion offset (MemNote NOTE-112)
+
+`super_editor/lib/src/default_editor/document_ime/document_delta_editing.dart`
+
+- `TextDeltasDocumentEditor._applyInsertion` force-unwrapped
+  `imeToDocumentSelection(...)`, so an insertion delta whose offset lands inside the
+  invisible `". "` prefix we prepend to the serialization killed the editing session
+  with "Null check operator used on a null value" mid-keystroke (MemNote Crashlytics,
+  Android 0.5.2). The unmappable insertion is now logged and dropped, and the delta
+  batch continues; `DocumentImeInputClient` re-syncs the IME with our document at the
+  end of the batch as it always does. Throwing also latched
+  `DocumentImeInputClient._isApplyingDeltas` to `true`, permanently fizzling every
+  later `_sendDocumentToIme()`, so the crash disabled IME re-sync as well.
+- **Genuine upstream candidate**, not a MemNote-specific behavior change: the `!` carried
+  upstream's own `// FIXME: ClickUp is getting NPE's on this line` comment (removed by this
+  patch), and the sibling `_applyReplacement` / `_applyDeletion` handlers in the same file
+  already treat a null mapping as a normal case. Not yet submitted upstream.
+
+Tests: `ime_android_exceptional_cases_test.dart` — "on Pixel 11 Pro (Android 17) >
+ignores an insertion whose offset maps into the invisible prefix".
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

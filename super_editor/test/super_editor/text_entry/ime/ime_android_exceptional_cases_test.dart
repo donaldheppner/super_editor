@@ -310,6 +310,70 @@ Paragraph two
         });
       });
 
+      group('on Pixel 11 Pro (Android 17)', () {
+        testWidgetsOnAndroid('ignores an insertion whose offset maps into the invisible prefix', (tester) async {
+          // We serialize the node that holds the caret with an invisible ". " prefix, so that the
+          // IME reports a backspace when the caret sits at the very beginning of a node. Those two
+          // characters have no counterpart in the document.
+          //
+          // Occasionally the IME reports an insertion at an offset that sits inside that invisible
+          // prefix. We can't map such an offset to a document position, so there's nowhere to put
+          // the inserted text. We used to force-unwrap the null document selection, which killed
+          // the user's editing session mid-keystroke with a "Null check operator used on a null
+          // value" error. Now we drop the insertion and keep editing.
+
+          await tester //
+              .createDocument()
+              .withSingleEmptyParagraph()
+              .withInputSource(TextInputSource.ime)
+              .pump();
+
+          // Place the caret at the start of the paragraph and type some text, so that the
+          // paragraph has real content to be corrupted, if we were to mis-apply the bad delta.
+          await tester.placeCaretInParagraph('1', 0);
+          await tester.typeImeText('Hello');
+
+          // The IME value is now ". Hello", where ". " is invisible to the user, and the caret
+          // sits at the end, at IME offset 7.
+          //
+          // Simulate the IME inserting a character at IME offset 1, which is *inside* the
+          // invisible prefix. There is no document position that corresponds to that offset.
+          await tester.ime.sendDeltas(
+            const [
+              TextEditingDeltaInsertion(
+                oldText: '. Hello',
+                textInserted: 'X',
+                insertionOffset: 1,
+                selection: TextSelection.collapsed(offset: 2),
+                composing: TextRange(start: -1, end: -1),
+              ),
+            ],
+            getter: imeClientGetter,
+          );
+
+          // Ensure the unmappable insertion was dropped, rather than applied somewhere arbitrary.
+          final document = SuperEditorInspector.findDocument()!;
+          expect(document.nodeCount, 1);
+          expect(SuperEditorInspector.findTextInComponent('1').toPlainText(), 'Hello');
+
+          // Ensure the caret didn't move.
+          expect(
+            SuperEditorInspector.findDocumentSelection(),
+            const DocumentSelection.collapsed(
+              position: DocumentPosition(
+                nodeId: '1',
+                nodePosition: TextNodePosition(offset: 5),
+              ),
+            ),
+          );
+
+          // Ensure the editing session survived, i.e., the IME was re-synced with our document
+          // and the very next keystroke lands in the right place.
+          await tester.typeImeText('!');
+          expect(SuperEditorInspector.findTextInComponent('1').toPlainText(), 'Hello!');
+        });
+      });
+
       group('GBoard >', () {
         testWidgetsOnAndroid('can insert newline into empty paragraph', (tester) async {
           // Verifies fix for GBoard empty paragraph newline bug:

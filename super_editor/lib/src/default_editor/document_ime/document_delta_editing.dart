@@ -321,8 +321,37 @@ class TextDeltasDocumentEditor {
     editorImeLog.fine("Converting IME insertion offset into a DocumentSelection");
     final insertionSelection = _serializedDoc.imeToDocumentSelection(
       TextSelection.fromPosition(insertionPosition),
-    )!;
-    // FIXME: ClickUp is getting NPE's on this line ^ (from Sentry error reports)
+    );
+
+    if (insertionSelection == null) {
+      // The IME gave us an insertion offset that doesn't map to any position in our current
+      // serialization. In practice this means the offset sits within the invisible characters
+      // that we prepend to the serialization (". "), which have no document counterpart. There's
+      // no sane place to put this text, so drop the insertion.
+      //
+      // Dropping a single inserted character is far better than throwing. Throwing here aborts
+      // the whole batch of deltas *and* prevents `DocumentImeInputClient` from ever re-syncing
+      // the IME, because it leaves `_isApplyingDeltas` latched to `true`, which permanently
+      // fizzles every subsequent `_sendDocumentToIme()`. By returning normally, the client
+      // re-serializes the document and pushes it to the platform IME at the end of this batch,
+      // which puts the two back in agreement.
+      //
+      // Note: we deliberately do *not* re-serialize the document here. We executed nothing, so
+      // the document, selection, and composing region are unchanged, which means `_serializedDoc`
+      // is still exactly as valid as it was a moment ago. Re-serializing would be a no-op at
+      // best, and at worst it would discard the hand-patched IME-to-node range mapping installed
+      // by `_updateImeRangeMappingAfterNodeSplit`, if an earlier delta in this same batch
+      // inserted a newline.
+      editorImeLog.warning(
+          "Dropping an IME insertion because its offset doesn't map to a document position. Insertion offset: ${delta.insertionOffset}, delta: $delta");
+
+      // Update the local IME value that changes with each delta. We do this even though we
+      // dropped the insertion, because this value mirrors what the *platform* thinks the text
+      // is, and the platform applied this delta no matter what we did with it.
+      _previousImeValue = delta.apply(_previousImeValue);
+
+      return;
+    }
 
     // Update the local IME value that changes with each delta.
     _previousImeValue = delta.apply(_previousImeValue);
