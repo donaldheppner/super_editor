@@ -245,12 +245,64 @@ class DocumentImeInputClient extends TextInputConnectionDecorator with TextInput
     _updatePlatformImeValueWithDeltas(textEditingDeltas);
 
     // Apply the deltas to our document, selection, and composing region.
-    textDeltasDocumentEditor.applyDeltas(textEditingDeltas);
-    editorImeLog.fine("===================================================");
-    _isApplyingDeltas = false;
+    //
+    // We hold on to any error instead of letting it unwind from here, because we still have to
+    // lower `_isApplyingDeltas` and re-sync the IME before it leaves this method - and the
+    // re-sync can throw too. If we let it throw while this error is in flight, Dart would
+    // replace this error with that one, and `applyDeltas()` deliberately rethrows unknown
+    // errors so that apps can report them. The original error, with its original stack trace,
+    // is what has to reach the caller.
+    Object? deltaError;
+    StackTrace? deltaStackTrace;
+    try {
+      textDeltasDocumentEditor.applyDeltas(textEditingDeltas);
+    } catch (error, stacktrace) {
+      deltaError = error;
+      deltaStackTrace = stacktrace;
+    } finally {
+      editorImeLog.fine("===================================================");
 
-    // Send latest doc and selection to IME
-    _sendDocumentToIme();
+      // Always lower this flag, including when `applyDeltas()` threw. `_isApplyingDeltas`
+      // gates `_sendDocumentToIme()`, `_onContentChange()`, and `setEditingState()`, so
+      // leaving it raised silently fizzles every future attempt to re-sync the IME with our
+      // document, for the lifetime of this client - the editor keeps running while our
+      // document and the platform IME drift apart, with no way back.
+      _isApplyingDeltas = false;
+    }
+
+    if (deltaError == null) {
+      // Send latest doc and selection to IME.
+      //
+      // Nothing is in flight here, so a throw from the re-sync propagates exactly as it
+      // always has. Only the failure path below gets a guard.
+      _sendDocumentToIme();
+      return;
+    }
+
+    // Applying the deltas failed part way through, so our document holds some of the batch
+    // while the platform IME holds all of it. Push our document to the IME to put the two back
+    // in agreement. This is the same recovery a normal return takes, and the one that the two
+    // mapping-failure catches inside `applyDeltas()` count on.
+    //
+    // It has to run *after* the flag is lowered, or it would fizzle on its own guard.
+    try {
+      _sendDocumentToIme();
+    } catch (error, stacktrace) {
+      // The recovery failed too. Report it, but don't let it out: it would displace the error
+      // we're already carrying, and an error the app never sees is worse than a re-sync we
+      // couldn't do. This is reachable - a batch that fails part way through can leave the
+      // selection pointing at content the document no longer has, and serializing that for the
+      // IME throws.
+      editorImeLog.shout(
+        "[DocumentImeInputClient] - Failed to re-sync the IME after applying deltas threw. The IME and the document "
+        "may now be out of sync. Recovery error: $error",
+      );
+      editorImeLog.shout(stacktrace);
+    }
+
+    // Let the original error continue on its way, with its original stack trace, now that
+    // we've cleaned up after it.
+    Error.throwWithStackTrace(deltaError, deltaStackTrace!);
   }
 
   bool _isSendingToIme = false;
@@ -275,25 +327,32 @@ class DocumentImeInputClient extends TextInputConnectionDecorator with TextInput
     }
 
     _isSendingToIme = true;
-    editorImeLog.fine("[DocumentImeInputClient] - Serializing and sending document and selection to IME");
-    editorImeLog.fine("[DocumentImeInputClient] - Selection: ${textDeltasDocumentEditor.selection.value}");
-    editorImeLog.fine("[DocumentImeInputClient] - Composing region: ${textDeltasDocumentEditor.composingRegion.value}");
-    final imeSerialization = DocumentImeSerializer(
-      textDeltasDocumentEditor.document,
-      textDeltasDocumentEditor.selection.value!,
-      textDeltasDocumentEditor.composingRegion.value,
-    );
+    try {
+      editorImeLog.fine("[DocumentImeInputClient] - Serializing and sending document and selection to IME");
+      editorImeLog.fine("[DocumentImeInputClient] - Selection: ${textDeltasDocumentEditor.selection.value}");
+      editorImeLog
+          .fine("[DocumentImeInputClient] - Composing region: ${textDeltasDocumentEditor.composingRegion.value}");
+      final imeSerialization = DocumentImeSerializer(
+        textDeltasDocumentEditor.document,
+        textDeltasDocumentEditor.selection.value!,
+        textDeltasDocumentEditor.composingRegion.value,
+      );
 
-    editorImeLog
-        .fine("[DocumentImeInputClient] - Adding invisible characters?: ${imeSerialization.didPrependPlaceholder}");
-    TextEditingValue textEditingValue = imeSerialization.toTextEditingValue();
+      editorImeLog
+          .fine("[DocumentImeInputClient] - Adding invisible characters?: ${imeSerialization.didPrependPlaceholder}");
+      TextEditingValue textEditingValue = imeSerialization.toTextEditingValue();
 
-    editorImeLog.fine("[DocumentImeInputClient] - Sending IME serialization:");
-    editorImeLog.fine("[DocumentImeInputClient] - $textEditingValue");
-    setEditingState(textEditingValue);
-    editorImeLog.fine("[DocumentImeInputClient] - Done sending document to IME");
-
-    _isSendingToIme = false;
+      editorImeLog.fine("[DocumentImeInputClient] - Sending IME serialization:");
+      editorImeLog.fine("[DocumentImeInputClient] - $textEditingValue");
+      setEditingState(textEditingValue);
+      editorImeLog.fine("[DocumentImeInputClient] - Done sending document to IME");
+    } finally {
+      // Same reasoning as `_isApplyingDeltas` above: serializing the document can throw, and a
+      // latched `_isSendingToIme` would make every later call to this method return at the
+      // guard above, permanently. This method is now also called while unwinding a failed delta
+      // batch, where a throw from the serializer is more likely than it is on the happy path.
+      _isSendingToIme = false;
+    }
   }
 
   @override

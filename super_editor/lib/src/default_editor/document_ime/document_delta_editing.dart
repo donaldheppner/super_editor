@@ -168,7 +168,28 @@ class TextDeltasDocumentEditor {
     editorImeLog.fine("After applying all deltas, converting the final composing region to a document range.");
     editorImeLog.fine("Raw IME delta composing region: ${textEditingDeltas.last.composing}");
 
-    DocumentRange? docComposingRegion = _calculateNewComposingRegion(textEditingDeltas);
+    DocumentRange? docComposingRegion;
+    try {
+      docComposingRegion = _calculateNewComposingRegion(textEditingDeltas);
+    } on FailedToMapImePositionToDocumentPositionException catch (exception, stacktrace) {
+      // The last delta's composing region doesn't map into the document we ended up with.
+      //
+      // This is the same failure, and gets the same treatment, as the mapping failures we
+      // swallow inside the delta loop above: report it, then leave the editor in a working
+      // state and let `DocumentImeInputClient` push our document to the IME, which puts the
+      // two back in agreement. Clearing the composing region (rather than leaving the stale
+      // one in place) mirrors what `_calculateNewComposingRegion` already does when the
+      // composing region runs past the end of our text.
+      //
+      // This can't live inside the try/catch around the delta loop: that block's `finally`
+      // ends the editor transaction, and this work has to happen *after* the transaction ends,
+      // because reactions run at the end of a transaction and can change the document again -
+      // that's why `_serializedDoc` is rebuilt just above. Moving it inside would either
+      // serialize a pre-reaction document or fold the `ChangeComposingRegionRequest` into the
+      // user's undoable transaction.
+      log?.onFailedToMapImePositionToDocumentPosition(exception, stacktrace);
+      docComposingRegion = null;
+    }
 
     if (docComposingRegion != composingRegion.value) {
       editor.execute([
@@ -315,6 +336,13 @@ class TextDeltasDocumentEditor {
       // so we should ignore this insertion.
       //
       // For more information, see #1828.
+      //
+      // Update the local IME value that changes with each delta. We do this even though we
+      // ignored the insertion, because this value mirrors what the *platform* thinks the text
+      // is, and the platform applied this delta no matter what we did with it. This matches
+      // the newline and tab guards above.
+      _previousImeValue = delta.apply(_previousImeValue);
+
       return;
     }
 

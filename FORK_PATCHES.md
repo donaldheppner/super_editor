@@ -284,6 +284,99 @@ Tests: `super_editor/test/super_editor/supereditor_selection_test.dart` — grou
 expanded selection without updating the selection and pumps a frame. Verified to fail
 with the production exception when the `lib/` change is reverted.
 
+### IME delta path: a throw must not permanently disable IME re-sync (MemNote NOTE-115)
+
+`super_editor/lib/src/default_editor/document_ime/document_ime_communication.dart`,
+`super_editor/lib/src/default_editor/document_ime/document_delta_editing.dart`
+
+- `DocumentImeInputClient.updateEditingValueWithDeltas` raised `_isApplyingDeltas`, called
+  `textDeltasDocumentEditor.applyDeltas(...)`, and lowered the flag *after* the call, with
+  no `try`/`finally`. `applyDeltas` rethrows unknown exceptions on purpose, so any throw out
+  of the delta loop both (a) latched `_isApplyingDeltas` to `true` for the lifetime of the
+  client and (b) skipped the `_sendDocumentToIme()` that normally follows. That flag gates
+  `_sendDocumentToIme()`, `_onContentChange()`, and `setEditingState()`, so after one throw
+  *every* subsequent attempt to re-sync the IME with the document fizzled silently: the
+  editor kept running while our document and the platform IME drifted apart, with no way
+  back. NOTE-112 removed one route into this state; this hardens the flag itself.
+- The `applyDeltas` call is now wrapped in `try`/`catch`/`finally`. The `finally` lowers the
+  flag; the re-sync runs after it, so it sees the flag already lowered instead of fizzling on
+  its own guard. The failure path is exactly when the two sides most need to be put back in
+  agreement (the document holds some of the batch, the platform holds all of it).
+- The error itself is **held, not rethrown from a `finally`**. Putting `_sendDocumentToIme()`
+  in the `finally` looks tidy but is wrong: `_sendDocumentToIme()` can throw, and a throw out
+  of a `finally` *replaces* the exception that is already unwinding. The error `applyDeltas`
+  deliberately rethrew — the one the app reports — would be silently swapped for the
+  recovery's error. So the `catch` stores the error and stack trace, the recovery runs guarded,
+  and `Error.throwWithStackTrace` re-raises the original with its original stack trace. On the
+  nominal path (no error in flight) the re-sync is *not* guarded, so a throw there propagates
+  exactly as it always has — only the unwinding case is special-cased. This matters because
+  the change is what makes `_sendDocumentToIme()` run during unwinding at all, and the throw it
+  can produce there is the very residual noted below (a half-applied batch can leave the
+  selection pointing at content the document no longer has).
+- `_sendDocumentToIme()` had the identical defect one method away: it raised `_isSendingToIme`,
+  serialized the document (which can throw), and lowered the flag afterwards, so a throw
+  there latched *that* flag and made every later send return at its guard. Its body is now
+  in a `try`/`finally` too. This matters more after the change above, because the method is
+  now also called while unwinding a failed batch, where a serializer throw is likelier.
+- **Judgement call — `_calculateNewComposingRegion` stays outside the delta loop's
+  `try`/`catch`, and gets its own guard instead.** It can throw
+  `FailedToMapImePositionToDocumentPositionException` (via `imeToDocumentRange`), and it runs
+  after the loop's `finally`, so today that throw escapes `applyDeltas` and defeats the two
+  typed catches' "swallow the mapping failure, keep the editor working, let the client
+  re-sync" contract — the very contract those catches were added for, and the scenario is
+  reachable precisely *because* an aborted batch leaves the composing region describing text
+  we no longer have. It can't simply move inside the existing block: that block's `finally`
+  ends the editor transaction, and the post-transaction work has to stay post-transaction —
+  reactions run at `endTransaction` and can change the document again, which is why
+  `_serializedDoc` is rebuilt immediately after it. Moving the call in would either serialize
+  a pre-reaction document or fold the `ChangeComposingRegionRequest` into the user's undoable
+  transaction. So it keeps its position and gets a narrow `on
+  FailedToMapImePositionToDocumentPositionException` catch that reports through the same
+  `log?.onFailedToMapImePositionToDocumentPosition` hook and clears the composing region.
+  Clearing (rather than leaving a stale region) mirrors what `_calculateNewComposingRegion`
+  already does when the composing region runs past the end of our text. Unknown exceptions
+  there are still not caught, so the rethrow contract is unchanged.
+- `_applyInsertion`'s `isPositionInsidePlaceholder` space guard now updates `_previousImeValue`
+  before returning, like the newline and tab guards beside it and like the NOTE-112 drop guard.
+  This is inert today — `TextEditingDelta.apply` rebuilds from `delta.oldText`, so
+  `_previousImeValue` isn't really an accumulator — but the inconsistency was latently wrong
+  if that Flutter behaviour ever changes.
+- **Not fixed here**: the `selection.value!` force-unwrap in the post-transaction
+  re-serialization of `applyDeltas` (a batch that empties the document could null the
+  selection), and the same unwrap in `_sendDocumentToIme` — plus the `getNodeById(...)!` that
+  `DocumentImeSerializer` reaches through `getNodesInContentOrder` when the selection names a
+  node the document no longer has. These still throw. What has changed is the blast radius: a
+  throw from any of them during recovery is now caught, reported through `editorImeLog.shout`,
+  and can no longer eat the original error or re-latch the flags, so the client stays usable
+  and the app still gets the report it was owed. Making them not throw is a separate
+  null-safety change.
+- **Genuine upstream candidate**, not a MemNote-specific behavior change: upstream already
+  uses a `finally` a few lines away for exactly this reason ("We must always end the
+  transaction, even if an error occurred. Otherwise… the editor will never stabilize"), and
+  this applies the same rule to the two flags that gate IME re-sync. Not yet submitted
+  upstream.
+
+Tests: `super_editor/test/super_editor/text_entry/ime/ime_typing_test.dart` — group
+"IME input > typing > after an exception while applying deltas", two tests.
+
+1. "the IME is re-synced and the next keystroke still lands" (widget level, all five
+   platforms) sends a two-delta batch whose first delta applies and whose second one throws
+   from an injected `EditRequestHandler`, then asserts the exception still escaped, that the
+   client re-synced the IME with the document, and that the next keystroke lands at the caret.
+   Verified to fail on all five platforms with the `lib/` change stashed
+   (`Expected: a string ending with 'Hello World'  Actual: '. Hello'` — the IME frozen at its
+   pre-batch value).
+2. "the original error survives a recovery that also throws" covers the masking window. It
+   builds a `DocumentImeInputClient` over a `TextDeltasDocumentEditor` subclass whose
+   `applyDeltas` points the shared selection notifier at a node the document doesn't have and
+   then throws, so the recovery's `DocumentImeSerializer` throws too. It asserts the caller
+   sees the delta error rather than the recovery's, that the recovery genuinely failed (the
+   IME value is still untouched, so the test can't pass by never entering the window), and
+   that a later successful batch still reaches the IME — which only happens if both
+   `_isApplyingDeltas` and `_isSendingToIme` were cleared. Verified to fail against the
+   `finally`-based version of the fix: `Expected: <Instance of '_DeltaApplicationException'>
+   Actual: _TypeError:<Null check operator used on a null value>`.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

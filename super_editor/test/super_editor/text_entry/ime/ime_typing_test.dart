@@ -262,5 +262,223 @@ Paragraph two
         );
       });
     });
+
+    group('after an exception while applying deltas >', () {
+      testWidgetsOnAllPlatforms('the IME is re-synced and the next keystroke still lands', (tester) async {
+        // `DocumentImeInputClient` raises `_isApplyingDeltas` while it hands a batch of deltas
+        // to `TextDeltasDocumentEditor`, and lowers it afterwards. That flag gates every path
+        // that re-syncs the IME with our document. If applying the deltas throws - and
+        // `applyDeltas()` deliberately rethrows unknown errors - the flag used to stay raised
+        // forever, and the client could never push our document to the IME again. The editor
+        // kept running, but our document and the platform IME drifted apart with no way back.
+        //
+        // Send a batch where the first delta applies and the second one blows up, then check
+        // that the client still re-synced, and that the next keystroke lands where the user
+        // expects instead of at a stale IME offset.
+
+        await tester //
+            .createDocument()
+            .withSingleEmptyParagraph()
+            .withInputSource(TextInputSource.ime)
+            .withAddedRequestHandlers([
+              (editor, request) {
+                if (request is InsertTextRequest && request.textToInsert == _explodingText) {
+                  throw _DeltaApplicationException();
+                }
+                return null;
+              },
+            ])
+            .pump();
+
+        await tester.placeCaretInParagraph('1', 0);
+        await tester.typeImeText('Hello');
+
+        // Grab the IME's view of the world before the doomed batch. We read the offsets from
+        // the client instead of hard-coding them, because the serialization may or may not
+        // carry an invisible prefix, depending on the platform and the caret position.
+        final imeClient = imeClientGetter();
+        final imeValueBeforeBatch = imeClient.currentTextEditingValue!;
+        final caretBeforeBatch = imeValueBeforeBatch.selection.baseOffset;
+
+        Object? thrownError;
+        try {
+          await tester.ime.sendDeltas(
+            [
+              // This delta applies cleanly.
+              TextEditingDeltaInsertion(
+                oldText: imeValueBeforeBatch.text,
+                textInserted: ' World',
+                insertionOffset: caretBeforeBatch,
+                selection: TextSelection.collapsed(offset: caretBeforeBatch + 6),
+                composing: TextRange.empty,
+              ),
+              // This one throws from inside the delta loop.
+              TextEditingDeltaInsertion(
+                oldText: '${imeValueBeforeBatch.text} World',
+                textInserted: _explodingText,
+                insertionOffset: caretBeforeBatch + 6,
+                selection: TextSelection.collapsed(offset: caretBeforeBatch + 7),
+                composing: TextRange.empty,
+              ),
+            ],
+            getter: imeClientGetter,
+          );
+        } catch (error) {
+          thrownError = error;
+        }
+        await tester.pump();
+
+        // Ensure the exception wasn't swallowed. `applyDeltas()` rethrows unknown errors on
+        // purpose, so that apps can report them, and the recovery must not change that.
+        expect(thrownError, isA<_DeltaApplicationException>());
+
+        // Ensure the first delta landed and the exploding one didn't.
+        expect(SuperEditorInspector.findTextInComponent('1').toPlainText(), 'Hello World');
+
+        // Ensure the client re-synced the IME with our document, despite the exception.
+        expect(imeClient.currentTextEditingValue!.text, endsWith('Hello World'));
+
+        // Ensure the very next keystroke lands at the caret, rather than at whatever offset
+        // the IME was stuck at when the exception was thrown.
+        await tester.typeImeText('!');
+        expect(SuperEditorInspector.findTextInComponent('1').toPlainText(), 'Hello World!');
+      });
+
+      test('the original error survives a recovery that also throws', () {
+        // The re-sync above runs while the exception from `applyDeltas()` is unwinding. If the
+        // re-sync throws too, Dart replaces the in-flight exception with the new one, and the
+        // error that `applyDeltas()` deliberately rethrew - the one the app reports - is lost.
+        // The recovery must never displace a real error.
+        //
+        // This isn't hypothetical on this path: a batch that fails part way through can leave
+        // the selection pointing at content the document no longer has, and serializing that
+        // selection for the IME throws.
+
+        final document = MutableDocument(nodes: [
+          ParagraphNode(id: "1", text: AttributedText("Hello")),
+        ]);
+        const validSelection = DocumentSelection.collapsed(
+          position: DocumentPosition(nodeId: "1", nodePosition: TextNodePosition(offset: 5)),
+        );
+        final composer = MutableDocumentComposer(initialSelection: validSelection);
+        final editor = createDefaultDocumentEditor(document: document, composer: composer);
+
+        // The client and the delta editor share these notifiers. `_sendDocumentToIme()`
+        // serializes whatever the selection notifier holds, so driving it directly is how this
+        // test puts the client into the state that a half-applied batch would leave behind.
+        final selection = ValueNotifier<DocumentSelection?>(validSelection);
+        final composingRegion = ValueNotifier<DocumentRange?>(null);
+
+        var shouldExplode = true;
+        final deltasDocumentEditor = _ExplodingDeltasDocumentEditor(
+          editor: editor,
+          document: document,
+          documentLayoutResolver: () => FakeDocumentLayout(),
+          selection: selection,
+          composerPreferences: composer.preferences,
+          composingRegion: composingRegion,
+          commonOps: CommonEditorOperations(
+            editor: editor,
+            document: document,
+            composer: composer,
+            documentLayoutResolver: () => FakeDocumentLayout(),
+          ),
+          onPerformAction: (_) {},
+          onApplyDeltas: () {
+            if (!shouldExplode) {
+              return;
+            }
+
+            // Leave the selection pointing at a node that the document doesn't have - the way
+            // a batch that removed content and then failed would - and then fail. Serializing
+            // this selection for the IME throws, which is what makes the recovery throw.
+            selection.value = const DocumentSelection.collapsed(
+              position: DocumentPosition(nodeId: "no-such-node", nodePosition: TextNodePosition(offset: 0)),
+            );
+            throw _DeltaApplicationException();
+          },
+        );
+
+        final imeClient = DocumentImeInputClient(
+          selection: selection,
+          composingRegion: composingRegion,
+          textDeltasDocumentEditor: deltasDocumentEditor,
+          imeConnection: ValueNotifier(null),
+          onPerformSelector: (_) {},
+          onImeConnectionClosed: () {},
+        );
+        addTearDown(imeClient.dispose);
+
+        // The client hasn't sent anything to the IME yet.
+        expect(imeClient.currentTextEditingValue, const TextEditingValue());
+
+        Object? thrownError;
+        try {
+          imeClient.updateEditingValueWithDeltas(const [
+            TextEditingDeltaInsertion(
+              oldText: ". Hello",
+              textInserted: "!",
+              insertionOffset: 7,
+              selection: TextSelection.collapsed(offset: 8),
+              composing: TextRange.empty,
+            ),
+          ]);
+        } catch (error) {
+          thrownError = error;
+        }
+
+        // The caller must see the delta error, not the recovery's error.
+        expect(thrownError, isA<_DeltaApplicationException>());
+
+        // Confirm the recovery really did fail, so this test can't quietly pass by never
+        // exercising the window where one error can displace another. If the re-sync had
+        // succeeded, it would have pushed a value to the IME.
+        expect(imeClient.currentTextEditingValue, const TextEditingValue());
+
+        // Put the selection back where a real recovery would leave it, then send a batch that
+        // succeeds. This only reaches the IME if `_isApplyingDeltas` and `_isSendingToIme` were
+        // both cleared - either one still raised makes `_sendDocumentToIme()` return at its
+        // guard, and the IME value would stay empty.
+        selection.value = validSelection;
+        shouldExplode = false;
+        imeClient.updateEditingValueWithDeltas(const [
+          TextEditingDeltaNonTextUpdate(
+            oldText: ". Hello",
+            selection: TextSelection.collapsed(offset: 7),
+            composing: TextRange.empty,
+          ),
+        ]);
+
+        expect(imeClient.currentTextEditingValue.text, ". Hello");
+      });
+    });
   });
 }
+
+/// A [TextDeltasDocumentEditor] that hands control of `applyDeltas` to the test, so that a batch
+/// can fail, and choose what state it leaves behind when it does.
+class _ExplodingDeltasDocumentEditor extends TextDeltasDocumentEditor {
+  _ExplodingDeltasDocumentEditor({
+    required super.editor,
+    required super.document,
+    required super.documentLayoutResolver,
+    required super.selection,
+    required super.composerPreferences,
+    required super.composingRegion,
+    required super.commonOps,
+    required super.onPerformAction,
+    required this.onApplyDeltas,
+  });
+
+  /// Runs in place of the real delta loop.
+  final VoidCallback onApplyDeltas;
+
+  @override
+  void applyDeltas(List<TextEditingDelta> textEditingDeltas) => onApplyDeltas();
+}
+
+/// Text that a test [EditRequestHandler] refuses to insert, by throwing.
+const _explodingText = '<boom>';
+
+/// The exception thrown when a test tries to insert [_explodingText].
+class _DeltaApplicationException implements Exception {}
