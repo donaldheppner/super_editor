@@ -157,6 +157,73 @@ void main() {
         );
       });
 
+      test("doesn't leak one paste's ignored tags into the next paste", () {
+        // html2md's `ignore:` argument appends to a package-level rule list that
+        // is never cleaned up, so a paste that ignores <aside> would make every
+        // later paste in the process ignore <aside> too. pasteHtml strips the
+        // ignored tags from the DOM instead; this guards that.
+        Editor newEditor() {
+          final editor = createDefaultDocumentEditor(
+            document: MutableDocument(
+              nodes: [ParagraphNode(id: "1", text: AttributedText())],
+            ),
+          );
+          editor.execute([
+            ChangeSelectionRequest(
+              DocumentSelection.collapsed(
+                position: DocumentPosition(
+                  nodeId: "1",
+                  nodePosition: TextNodePosition(offset: 0),
+                ),
+              ),
+              SelectionChangeType.placeCaret,
+              SelectionReason.userInteraction,
+            ),
+          ]);
+          return editor;
+        }
+
+        // A paste that asks for <aside> to be dropped.
+        final firstEditor = newEditor();
+        firstEditor.pasteHtml(
+          firstEditor,
+          "<meta charset='utf-8'><aside>Dropped</aside><p>Hello, World!</p>",
+          ignoredTags: const {"aside"},
+        );
+        expect(
+          firstEditor.document,
+          documentEquivalentTo(
+            MutableDocument(
+              nodes: [
+                ParagraphNode(id: "1", text: AttributedText("Hello, World!")),
+              ],
+            ),
+          ),
+        );
+
+        // A later paste that never asked for <aside> to be dropped must keep it.
+        final secondEditor = newEditor();
+        secondEditor.pasteHtml(
+          secondEditor,
+          "<meta charset='utf-8'><aside>Kept</aside><p>Hello, World!</p>",
+        );
+        expect(secondEditor.document.length, 2);
+        expect(
+          secondEditor.document,
+          documentEquivalentTo(
+            MutableDocument(
+              nodes: [
+                ParagraphNode(id: "1", text: AttributedText("Kept")),
+                ParagraphNode(
+                  id: secondEditor.document.getNodeAt(1)!.id,
+                  text: AttributedText("Hello, World!"),
+                ),
+              ],
+            ),
+          ),
+        );
+      });
+
       test("pastes multiple paragraphs in empty paragraph", () {
         const html = "<meta charset='utf-8'><p>One</p><p>Two</p><p>Three</p>";
         final editor = createDefaultDocumentEditor(

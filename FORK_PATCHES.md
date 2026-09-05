@@ -218,6 +218,54 @@ Candidate for upstreaming, likely reshaped as an instance-level or
 Tests: MemNote's `markdown_copy_test.dart` (copy/cut through
 `CommonEditorOperations` with a mocked clipboard).
 
+### HTML paste: don't leak an html2md ignore rule per paste (MemNote NOTE-130)
+
+`super_editor_clipboard/lib/src/editor_paste.dart`
+
+`RichTextPaste.pasteHtml` passed its `ignoredTags` to `html2md.convert`'s
+`ignore:` argument. In html2md 1.3.2 that argument is not per-conversion:
+`convert()` calls `Rule.addIgnore(ignore)`, which does
+`_commonMarkRules.insert(0, buildIgnoreRule(names))` on a **library-level**
+`List<Rule>` in `html2md/lib/src/rules.dart`. Nothing dedupes and nothing ever
+removes the entry, so the list grows by one rule per call for the life of the
+isolate.
+
+Two consequences, both reproduced against the pinned 1.3.2:
+
+- **Cross-call contamination.** The tags one paste ignored stay ignored for
+  every later `convert()` in the process — including calls from unrelated code
+  that passed no `ignore:` at all. 200 calls, each ignoring a different tag,
+  left all 200 tags ignored on a subsequent no-`ignore:` conversion.
+- **Unbounded slowdown.** `Rule.findRule` walks the list per node, so every
+  conversion anywhere in the app gets slower. 400 conversions of a small
+  document took 130 ms after ~200 ignore calls and 1004 ms after ~20 200 — a
+  7.7x regression.
+
+`pasteHtml` now parses the HTML itself, removes the ignored elements from the
+DOM (matching on lowercase local name, the way html2md's `ignore:` filter did),
+and hands `html2md.convert` the resulting `<html>` element. That is what
+`convert` does to a `String` input anyway
+(`parse(input).getElementsByTagName('html').first`), so output is unchanged; the
+package gains a direct `html` dependency it already had transitively via
+html2md.
+
+The real fix belongs in html2md — `addIgnore` should dedupe, or ignores should
+be scoped to one conversion — but that is a separate package and its own call;
+this is the fix that removes the leak from super_editor. Genuine upstream
+candidate for super_editor: it is a defect in upstream's code, the ignore
+semantics are preserved exactly, and it needs no API change. Not yet submitted
+upstream.
+
+Tests: `super_editor_clipboard/test/copy_and_paste_test.dart` — new
+"doesn't leak one paste's ignored tags into the next paste" (a paste with
+`ignoredTags: {"aside"}` followed by a default paste that must keep its
+`<aside>`). It fails on the pre-fix implementation (1 node instead of 2) and
+passes after. The package's 12 tests pass; note that running them at all needs
+local path overrides for `super_editor`/`super_keyboard`, because the pub.dev
+`super_editor: ^0.3.0-dev.52` this package resolves to no longer compiles
+against current Flutter (`TextInputStyle` / `TextInputConnection.updateStyle`).
+That is pre-existing and unrelated.
+
 ### IME insertion guard: don't crash on an unmappable insertion offset (MemNote NOTE-112)
 
 `super_editor/lib/src/default_editor/document_ime/document_delta_editing.dart`
