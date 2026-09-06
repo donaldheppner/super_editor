@@ -242,16 +242,85 @@ class _FormattingToolbarState extends State<FormattingToolbar> {
     return SpanRange(startOffset, endOffset + 1);
   }
 
-  void _indent() {
+  /// The node that the indent and un-indent buttons act upon: the node at the
+  /// selection extent, or `null` when there's no selection, or when the
+  /// selection sits in a node that has no notion of indentation.
+  TextNode? get _indentableNode {
     final selection = _composer.selection;
     if (selection == null) {
-      return;
+      return null;
     }
 
     final extentNode = _document.getNodeById(selection.extent.nodeId);
-    if (extentNode is! TextNode) {
-      return;
+    return extentNode is TextNode ? extentNode : null;
+  }
+
+  /// Whether pressing the indent button would actually indent something.
+  ///
+  /// Two of the three indent commands enforce a structural rule and simply
+  /// return when it isn't met: [IndentListItemCommand] refuses an item that has
+  /// no list item immediately above it to nest under, or that already sits as
+  /// deep as that item allows ([canIndentListItem]), and [IndentTaskCommand]
+  /// refuses a task on the same grounds. Dispatching the request without asking
+  /// that question first gives a button that silently does nothing — no
+  /// movement, and nothing to tell the reader why. Asking it here, and handing
+  /// the button a `null` `onPressed` when the answer is no, is what turns the
+  /// editor's refusal into something the user can see.
+  bool get _canIndent {
+    final extentNode = _indentableNode;
+
+    if (extentNode is ParagraphNode) {
+      // `IndentParagraphCommand` applies no structural rule and has no
+      // ceiling — a paragraph can always take one more level.
+      return true;
+    } else if (extentNode is ListItemNode) {
+      return canIndentListItem(_document, extentNode);
+    } else if (extentNode is TaskNode) {
+      return _canIndentTask(extentNode);
     }
+
+    return false;
+  }
+
+  /// Whether [task] may indent one more level, mirroring [IndentTaskCommand].
+  ///
+  /// `super_editor` exports [canIndentListItem] as the list item counterpart of
+  /// this, but publishes no equivalent predicate for tasks, so the task rule is
+  /// restated here. It is the same rule: a task nests under the task
+  /// immediately above it, and only to one level deeper than that task.
+  bool _canIndentTask(TaskNode task) {
+    final taskAbove = _document.getNodeBeforeById(task.id);
+    if (taskAbove is! TaskNode) {
+      // There's no task above this one, therefore it has nothing to nest under.
+      return false;
+    }
+
+    return task.indent < taskAbove.indent + 1;
+  }
+
+  /// Whether pressing the un-indent button would actually change the document.
+  ///
+  /// The un-indent commands refuse less often than the indent ones — only at
+  /// indent 0 — but they refuse just as silently, so the button asks the same
+  /// question that [_canIndent] does.
+  bool get _canUnindent {
+    final extentNode = _indentableNode;
+
+    if (extentNode is ParagraphNode) {
+      return extentNode.indent > 0;
+    } else if (extentNode is ListItemNode) {
+      // A list item at indent 0 doesn't refuse: `UnIndentListItemCommand`
+      // converts it to a paragraph instead, which is a visible change.
+      return true;
+    } else if (extentNode is TaskNode) {
+      return extentNode.indent > 0;
+    }
+
+    return false;
+  }
+
+  void _indent() {
+    final extentNode = _indentableNode;
 
     if (extentNode is ParagraphNode) {
       widget.editor.execute([
@@ -269,15 +338,7 @@ class _FormattingToolbarState extends State<FormattingToolbar> {
   }
 
   void _unindent() {
-    final selection = _composer.selection;
-    if (selection == null) {
-      return;
-    }
-
-    final extentNode = _document.getNodeById(selection.extent.nodeId);
-    if (extentNode is! TextNode) {
-      return;
-    }
+    final extentNode = _indentableNode;
 
     if (extentNode is ParagraphNode) {
       widget.editor.execute([
@@ -409,11 +470,11 @@ class _FormattingToolbarState extends State<FormattingToolbar> {
           ),
           _buildSpacer(),
           IconButton(
-            onPressed: _unindent,
+            onPressed: _canUnindent ? _unindent : null,
             icon: const Icon(Icons.format_indent_decrease),
           ),
           IconButton(
-            onPressed: _indent,
+            onPressed: _canIndent ? _indent : null,
             icon: const Icon(Icons.format_indent_increase),
           ),
           _buildSpacer(),

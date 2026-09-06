@@ -793,6 +793,61 @@ alone" on each platform — `addListener` throws for everything released and ret
 everything deliberately kept — and, on Android, "doesn't dispose a `LeaderLink` that the caller
 supplied". Fork suite: 5668 passing, 7 skipped (5663 before these five).
 
+### Quill clone toolbar: disable the indent buttons the editor would refuse (MemNote NOTE-146)
+
+`super_clones/quill/lib/editor/toolbar.dart`
+
+The first entry here that touches no `lib/` file. `super_clones/quill` is a demo app, not
+something MemNote builds or ships, so this changes nothing at runtime for the app — it is
+recorded because it is still a fork-vs-upstream divergence that a rebase has to carry, and
+because it is the follow-through on the NOTE-131 entry above.
+
+The quill toolbar's indent/un-indent buttons dispatch `IndentListItemRequest`,
+`IndentTaskRequest` and their `UnIndent` counterparts **directly**, rather than through
+`CommonEditorOperations`. Each of those commands enforces a rule and simply returns when it
+isn't met, so a refused indent reached the user as a live-looking button that did nothing —
+no movement, no feedback, no explanation. NOTE-131 made that reachable for bullets
+(`canIndentListItem`); for tasks it was reachable all along, because `IndentTaskCommand` has
+always refused a task with no task above it, and the two un-indent commands have always
+refused at indent 0. The clone is reference code, and a button that silently no-ops is a bad
+example to read.
+
+- **Greyed, not routed.** The ticket's suggested fix was to route the button through
+  `CommonEditorOperations.indentListItem()` and read its bool. That bool does now exist and
+  does report the refusal, but it is the wrong instrument here: constructing a
+  `CommonEditorOperations` needs a `DocumentLayoutResolver` the toolbar doesn't have and
+  doesn't otherwise want; it covers list items only, leaving the task and paragraph branches
+  on the old pattern; it additionally requires base *and* extent in the same list item, which
+  is narrower than what the button does today; and a bool read *after* the press still leaves
+  a button that looked pressable. So the toolbar asks the question the commands ask —
+  `canIndentListItem` for list items, the same predicate spelled out for tasks, always-true
+  for paragraphs — and hands `IconButton` a `null` `onPressed` when the answer is no. Material
+  greys it, which is the pattern the toolbar already uses for its unimplemented video and
+  formula buttons.
+
+- **The task rule is restated in the sample, not shared.** `super_editor` exports
+  `canIndentListItem` but publishes no `canIndentTask`, so `_canIndentTask` in the toolbar
+  duplicates six lines of `IndentTaskCommand`. Exporting the task predicate from
+  `tasks.dart` — the way NOTE-131 exported the list one — would remove the duplication;
+  that's a `lib/` change and is not in this patch.
+
+- **Un-indent came along.** Same method, same three-way dispatch, same silent refusal at
+  indent 0 for paragraphs and tasks. A toolbar that greys indent while leaving un-indent dead
+  would be worse reference code than one that greys neither. A list item at indent 0 stays
+  enabled: `UnIndentListItemCommand` converts it to a paragraph rather than refusing.
+
+- **Not submitted upstream.** The task and un-indent halves apply to upstream unchanged and
+  would stand on their own there; the list-item half only means anything on top of NOTE-131,
+  which is itself unsubmitted. Upstream submission is Don's call.
+
+Tests: `super_clones/quill/test/editor/toolbar_indent_test.dart`, new — the clone had no
+tests at all before this (only `super_clones/obsidian` had one, and it is the unedited
+`flutter create` counter smoke test, which does not pass). Ten tests over the two buttons
+and the three node types; six of the ten fail on the pre-patch toolbar (verified by
+restoring the file and re-running: 4 passing / 6 failing before, 10 passing after).
+`flutter analyze` in the clone: 12 issues before and after, all pre-existing
+`deprecated_member_use` infos.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:
