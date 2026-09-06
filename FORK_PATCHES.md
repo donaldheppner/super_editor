@@ -974,6 +974,85 @@ replacement's geometry is written after the swap and cleared on release. The
 "controller lifecycle >" test now names all four floating cursor notifiers instead of just
 `isActive`. Fork suite: 5669 passing, 7 skipped (5668 before the one new test).
 
+### iOS controls layer: subscribe to `areSelectionHandlesAllowed`, like Android does (MemNote NOTE-148)
+
+`super_editor/lib/src/infrastructure/platforms/ios/ios_document_controls.dart`,
+`super_editor/lib/src/default_editor/document_gestures_touch_ios.dart` (doc comment only)
+
+`SuperEditorIosControlsController.preventSelectionHandles()` did nothing on its own.
+`IosControlsDocumentLayerState` reads `areSelectionHandlesAllowed` only from
+`computeLayoutDataWithDocumentLayout`, which runs during that layer's *build*, and nothing
+subscribed to the notifier — so the call took effect only when some unrelated change happened
+to rebuild the layer in the same frame. The layer now subscribes, with the same
+`initState`/`didUpdateWidget`/`dispose` trio it already uses for `shouldCaretBlink`,
+`floatingCursorController.isActive` and `handleBeingDragged`.
+
+- **This was measured, not reasoned about.** NOTE-148 allowed for the redundancy being real —
+  the layer might rebuild on every relevant gesture anyway. It doesn't. A widget test that
+  calls `preventSelectionHandles()` and then pumps a single frame with nothing else happening
+  finds the caret still on screen and both expanded handles still on screen. The same test
+  shape on Android takes the caret from present to absent, which is the asymmetry the ticket
+  suspected, confirmed.
+
+- **The observable was checked for sensitivity in both directions.** Positive control: with
+  the subscription removed but a `ChangeSelectionRequest` executed right after
+  `preventSelectionHandles()`, the handles *do* disappear — so the finder tracks the notifier's
+  real effect, and the "it works by luck" reading is exactly right. Negative control: with the
+  fix in place and the `addListener` line commented out, three of the four new
+  "selection handles allowed >" tests fail and the fourth — the one that also changes the
+  selection — still passes. That fourth test is the record of which path already worked.
+
+- **Who was relying on luck.** The only callers are in `super_editor_spellcheck`.
+  `SuperEditorIosSpellCheckerTapHandler.onTap` calls `preventSelectionHandles()` and *then*
+  executes a `ChangeSelectionRequest`, so the hide rode along on the selection change and
+  looked fine. Its `_hideSpellCheckerPopover()` is the exposed direction: it calls
+  `allowSelectionHandles()` and then only re-styles and hides a popover, with no guaranteed
+  selection change — reached from `onDoubleTap` and `onPanStart`, and from `onTap` when the
+  tapped word has no suggestions. `spelling_error_suggestion_overlay.dart` calls
+  `allowSelectionHandles()` on dismissal with nothing else attached at all.
+
+- **It doesn't cost the working paths a frame.** `setState` is `Element.markNeedsBuild`, which
+  returns early when the element is already dirty, so `preventSelectionHandles()` immediately
+  followed by a selection change — the spell-checker's exact sequence — still produces one
+  build. Pinned by "doesn't need an extra frame when the caller also changes the selection",
+  which asserts both effects land in a single `pump()` and that
+  `tester.binding.hasScheduledFrame` is `false` afterwards.
+
+- **NOTE-142's disposal of this notifier still holds, and is re-pinned.** That entry justified
+  disposing `_areSelectionHandlesAllowed` partly on "it is never even subscribed to", which is
+  no longer true; the doc comment on `SuperEditorIosControlsController.dispose` has been
+  rewritten to say so explicitly rather than quietly going stale. The answer doesn't change:
+  the new subscription is the same build-phase, matched-pair shape as `shouldCaretBlink` and
+  `handleBeingDragged`, which that method has disposed since NOTE-142 without incident. The
+  *adds* land on the incoming controller and the *removes* on the outgoing one, and
+  `ChangeNotifier.removeListener` is explicitly allowed after dispose. A new layer-lifecycle
+  test drives exactly that: prevent handles on the first controller (so the listener sits on
+  the notifier that is about to be disposed), swap the controller, and confirm the caret comes
+  back and the replacement's notifier is the live one, with no exception.
+
+- **Noted and deliberately not changed: Android's expanded handles ignore this notifier.** On
+  Android, `AndroidHandlesDocumentLayer` only builds `Leader`s for the expanded handles; the
+  handle widgets themselves live in `SuperEditorAndroidControlsOverlayManager`, which never
+  consults `areSelectionHandlesAllowed`. So on Android `preventSelectionHandles()` hides the
+  caret and drops the Leaders while the two expanded handles stay on screen, where on iOS
+  (which builds the handles in the layer) it now hides all three. That is a real cross-platform
+  inconsistency, but it is a different defect in a different file from the one this ticket
+  named, and fixing it would change Android behaviour that has shipped. Left as a finding.
+
+- **Genuine upstream candidate**: upstream's own two platform layers disagreeing about
+  upstream's own notifier, with Android's `_onSelectionHandlesAllowedChange` standing as the
+  evidence of intent, and upstream's own spellcheck package as the caller that needs it. Not
+  submitted.
+
+Tests: `super_editor/test/super_editor/mobile/super_editor_ios_overlay_controls_test.dart`,
+new group "selection handles allowed >" with four tests — hides the caret, hides the expanded
+handles, brings the caret back, and doesn't need an extra frame when the caller also changes
+the selection — plus "layer lifecycle > keeps honoring preventSelectionHandles after the
+controls controller is replaced". A test-local `_pumpAppOwnedControls` helper hangs the scope
+above `SuperEditor` so a test can drive the controller the layers actually resolve
+(`SuperEditorIosControlsScope.rootOf` takes the root-most scope).
+Fork suite: 5674 passing, 7 skipped (5669 before these five).
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:
