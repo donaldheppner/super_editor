@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:follow_the_leader/follow_the_leader.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_test_robots/flutter_test_robots.dart';
 import 'package:flutter_test_runners/flutter_test_runners.dart';
@@ -879,8 +880,150 @@ void main() {
         // Ensure the disposed layer's BlinkController wasn't one of them.
         expect(tester.takeException(), isNull);
       });
+
+      testWidgetsOnAndroid("keeps working after the app disposes and replaces the controls controller", (tester) async {
+        // An app that owns the controls scope can also *replace* the controller while the
+        // editor beneath it stays mounted - e.g. rebuilding it whenever the theme's
+        // selection-handle color changes, from didChangeDependencies. Everything the old
+        // controller hands out is still referenced by the live editor at that instant: the
+        // handles layer's listeners, and the Leader that's wrapping the caret.
+        final handleColor = ValueNotifier<Color>(Colors.red);
+        addTearDown(handleColor.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: _ThemedAppOwnedControlsScope(handleColor: handleColor),
+            ),
+          ),
+        );
+
+        // Place the caret. This builds a Leader around it, linked to the controller's
+        // collapsedHandleFocalPoint, and lays it out - which writes a leaderSize onto
+        // that link.
+        await tester.placeCaretInParagraph("1", 0);
+
+        // Change the theme color. The scope disposes the old controller from
+        // didChangeDependencies and rebuilds the subtree against a new one, in the same
+        // frame, while the old Leader render object still points at the old link.
+        handleColor.value = Colors.blue;
+        await tester.pumpAndSettle();
+
+        // Keep using the editor against the replacement controller.
+        await tester.placeCaretInParagraph("1", 10);
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+      });
+    });
+
+    group("controller lifecycle >", () {
+      test("disposes every notifier it owns, and leaves the LeaderLinks alone", () {
+        final controller = SuperEditorAndroidControlsController();
+        controller.dispose();
+
+        // Every ValueNotifier and signal on the controller is released. Each of these is
+        // only ever subscribed to from the build phase by a widget that also removes its
+        // listener, so releasing them can't strand a live client.
+        expect(() => controller.shouldCaretBlink.addListener(() {}), throwsFlutterError);
+        expect(() => controller.caretJumpToOpaqueSignal.addListener(() {}), throwsFlutterError);
+        expect(() => controller.shouldShowCollapsedHandle.addListener(() {}), throwsFlutterError);
+        expect(() => controller.shouldShowExpandedHandles.addListener(() {}), throwsFlutterError);
+        expect(() => controller.areSelectionHandlesAllowed.addListener(() {}), throwsFlutterError);
+        expect(() => controller.shouldShowMagnifier.addListener(() {}), throwsFlutterError);
+        expect(() => controller.shouldShowToolbar.addListener(() {}), throwsFlutterError);
+
+        // The LeaderLinks are deliberately NOT released. A RenderLeader writes to its link
+        // during layout and paint, and LeaderLink defers those notifications to a
+        // post-frame callback - so a disposed link asserts after the controller is already
+        // gone. See SuperEditorAndroidControlsController.dispose.
+        expect(() => controller.collapsedHandleFocalPoint.addListener(() {}), returnsNormally);
+        expect(() => controller.upstreamHandleFocalPoint.addListener(() {}), returnsNormally);
+        expect(() => controller.downstreamHandleFocalPoint.addListener(() {}), returnsNormally);
+        expect(() => controller.magnifierFocalPoint.addListener(() {}), returnsNormally);
+        expect(() => controller.toolbarFocalPoint.addListener(() {}), returnsNormally);
+      });
+
+      test("doesn't dispose a LeaderLink that the caller supplied", () {
+        // The three handle focal points are constructor parameters. A caller that passes its
+        // own link keeps using it after this controller is gone, so it isn't the
+        // controller's to end.
+        final collapsed = LeaderLink();
+        final upstream = LeaderLink();
+        final downstream = LeaderLink();
+
+        SuperEditorAndroidControlsController(
+          collapsedHandleFocalPoint: collapsed,
+          upstreamHandleFocalPoint: upstream,
+          downstreamHandleFocalPoint: downstream,
+        ).dispose();
+
+        expect(() => collapsed.addListener(() {}), returnsNormally);
+        expect(() => upstream.addListener(() {}), returnsNormally);
+        expect(() => downstream.addListener(() {}), returnsNormally);
+      });
     });
   });
+}
+
+/// Displays a [SuperEditor] beneath an app-owned [SuperEditorAndroidControlsScope] whose
+/// controller is thrown away and rebuilt whenever the ambient handle color changes.
+///
+/// This is MemNote's arrangement: the controller carries a color, so a theme change means a
+/// new controller, disposed and replaced from `didChangeDependencies` while the editor below
+/// it stays mounted.
+class _ThemedAppOwnedControlsScope extends StatefulWidget {
+  const _ThemedAppOwnedControlsScope({
+    required this.handleColor,
+  });
+
+  final ValueListenable<Color> handleColor;
+
+  @override
+  State<_ThemedAppOwnedControlsScope> createState() => _ThemedAppOwnedControlsScopeState();
+}
+
+class _ThemedAppOwnedControlsScopeState extends State<_ThemedAppOwnedControlsScope> {
+  late final MutableDocumentComposer _composer;
+  late final Editor _editor;
+
+  SuperEditorAndroidControlsController? _controlsController;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _composer = MutableDocumentComposer();
+    _editor = createDefaultDocumentEditor(document: singleParagraphDoc(), composer: _composer);
+
+    widget.handleColor.addListener(_onHandleColorChange);
+    _rebuildControlsController();
+  }
+
+  @override
+  void dispose() {
+    widget.handleColor.removeListener(_onHandleColorChange);
+    _controlsController?.dispose();
+
+    super.dispose();
+  }
+
+  void _onHandleColorChange() {
+    setState(_rebuildControlsController);
+  }
+
+  void _rebuildControlsController() {
+    _controlsController?.dispose();
+    _controlsController = SuperEditorAndroidControlsController(controlsColor: widget.handleColor.value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SuperEditorAndroidControlsScope(
+      controller: _controlsController!,
+      child: SuperEditor(editor: _editor),
+    );
+  }
 }
 
 /// Displays a [SuperEditor] beneath an app-owned [SuperEditorAndroidControlsScope], and

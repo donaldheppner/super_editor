@@ -125,9 +125,44 @@ class SuperEditorIosControlsController {
     this.createOverlayControlsClipper,
   }) : floatingCursorController = floatingCursorController ?? FloatingCursorController();
 
+  /// Releases every [ChangeNotifier] that this controller both created and can safely
+  /// release - which is all of them except the two [LeaderLink]s.
+  ///
+  /// Each notifier below is only ever subscribed to from the widget build phase, by widgets
+  /// that keep a matching `removeListener` - see [IosHandlesDocumentLayerState], whose
+  /// `initState`/`didUpdateWidget`/`dispose` trio subscribes to [shouldCaretBlink] and
+  /// [handleBeingDragged] as a matched pair. A client that replaces one controller with
+  /// another - as an app does when it owns the [SuperEditorIosControlsScope] and the
+  /// controller carries a themed [handleColor] - drops its old listeners in the same build
+  /// that adds the new ones, and `ChangeNotifier.removeListener` is explicitly allowed on a
+  /// disposed notifier. [areSelectionHandlesAllowed] is never even subscribed to; it is only
+  /// read through `.value`.
+  ///
+  /// [magnifierFocalPoint] and [toolbarFocalPoint] are deliberately left undisposed, and are
+  /// therefore leaked when a controller is thrown away. Both are the `link` of a `Leader`
+  /// inside `SuperEditor` - the magnifier's in [IosDocumentTouchInteractor], the toolbar's in
+  /// `IosToolbarFocalPointDocumentLayer` - and a `RenderLeader` writes to its link outside
+  /// the build phase: `performLayout` sets `link.leaderSize`, `paint` sets `link.offset` and
+  /// `link.scale`, and `RenderLeader.set link` clears `leaderSize` on the *outgoing* link
+  /// during the very build that swaps this controller out. Each of those setters calls
+  /// `LeaderLink.notifyListeners`, which - while the scheduler is in
+  /// `SchedulerPhase.persistentCallbacks` - re-posts itself through `addPostFrameCallback`
+  /// instead of notifying inline. So the notification lands *after* `dispose()` has run and
+  /// Flutter reports "A LeaderLink was used after being disposed." Disposing them here does
+  /// not remove a leak; it converts a quiet one into a frame-time assertion on a client that
+  /// did nothing wrong. A `LeaderLink` holds only listener registrations and cached geometry,
+  /// and its `RenderLeader`/`RenderFollower` listeners unregister themselves in `detach()`,
+  /// so an abandoned link is collected with the controller rather than pinning a widget tree.
+  ///
+  /// Note that [floatingCursorController] is disposed unconditionally even though it can be
+  /// supplied by the caller. That is this controller's contract, not an oversight it is safe
+  /// to ignore: a caller that passes its own [FloatingCursorController] hands over its
+  /// lifetime and must not reuse it afterwards.
   void dispose() {
     floatingCursorController.dispose();
     _shouldCaretBlink.dispose();
+    _areSelectionHandlesAllowed.dispose();
+    handleBeingDragged.dispose();
     _shouldShowMagnifier.dispose();
     _shouldShowToolbar.dispose();
   }
@@ -194,6 +229,8 @@ class SuperEditorIosControlsController {
   void toggleMagnifier() => _shouldShowMagnifier.value = !_shouldShowMagnifier.value;
 
   /// Link to a location where a magnifier should be focused.
+  ///
+  /// Not released by [dispose] - see that method for why.
   final magnifierFocalPoint = LeaderLink();
 
   /// (Optional) Builder to create the visual representation of the magnifier.
@@ -219,6 +256,8 @@ class SuperEditorIosControlsController {
   /// This link probably points to a rectangle, such as a bounding rectangle
   /// around the user's selection. Therefore, the toolbar builder shouldn't
   /// assume that this focal point is a single pixel.
+  ///
+  /// Not released by [dispose] - see that method for why.
   final toolbarFocalPoint = LeaderLink();
 
   /// (Optional) Builder to create the visual representation of the floating

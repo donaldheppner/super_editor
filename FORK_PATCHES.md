@@ -705,6 +705,93 @@ before, 5 passing after). Two existing fixtures indented the *first* node of the
 and had to move to the second: "updates caret position when indenting" in both the unordered
 and ordered groups of that file, and "software keyboard > tab indents list item" in
 `supereditor_keyboard_test.dart`. Fork suite: 5663 passing, 7 skipped.
+### Mobile controls controllers: finish `dispose()`, and say why the `LeaderLink`s stay (MemNote NOTE-142)
+
+`super_editor/lib/src/default_editor/document_gestures_touch_android.dart`,
+`super_editor/lib/src/default_editor/document_gestures_touch_ios.dart`
+
+Split out of NOTE-141, which found the omission and deliberately left it. Both mobile controls
+controllers released three of their notifiers and abandoned the rest. This finishes the ones
+that can be finished and documents, in the code, why the rest cannot be — the answer is not
+the same for every member, and the ticket accepted either outcome so long as the reasoning is
+specific.
+
+**Now disposed.** Android gains `caretJumpToOpaqueSignal`, `_shouldShowCollapsedHandle`,
+`_shouldShowExpandedHandles` and `_areSelectionHandlesAllowed`; iOS gains
+`_areSelectionHandlesAllowed` and `handleBeingDragged`.
+
+- Safe because of *how* they are consumed, not because nobody consumes them. Every one is
+  subscribed to only from the build phase, by a widget that keeps a matching
+  `removeListener`: `AndroidControlsDocumentLayerState.didChangeDependencies` (remove-old,
+  add-new), `IosHandlesDocumentLayerState`'s `initState`/`didUpdateWidget`/`dispose` trio, and
+  `ValueListenableBuilder`s in the overlay managers.
+- The hazard the ticket flagged — `addListener` asserts on a disposed `ChangeNotifier`, and a
+  controller swap does remove-old/add-new — points the wrong way round. The *removes* land on
+  the outgoing controller and `ChangeNotifier.removeListener` is explicitly allowed after
+  dispose (its own source says so); the *adds* land on the incoming one. `.value` reads on a
+  disposed `ValueNotifier` are fine too.
+- The three already disposed (`_shouldCaretBlink`, `_shouldShowMagnifier`,
+  `_shouldShowToolbar`) are consumed by exactly the same call sites, and have shipped that way,
+  so the four/two added here are symmetric with proven-safe members rather than a new class of
+  risk.
+
+**Deliberately not disposed: the five Android `LeaderLink`s and the two iOS ones.** They now
+carry a `dispose()` doc comment naming the interaction, plus a one-line pointer on each field.
+
+- A `RenderLeader` writes to its link **outside the build phase**, and `LeaderLink` **defers
+  those notifications past the end of the frame**. `RenderLeader.performLayout` sets
+  `link.leaderSize`; `paint` sets `link.offset` and `link.scale`; and `RenderLeader.set link`
+  clears `leaderSize` on the *outgoing* link — that last one during the very build that swaps
+  the controller. Each setter calls `LeaderLink.notifyListeners`, which, while the scheduler
+  is in `SchedulerPhase.persistentCallbacks`, re-posts itself through `addPostFrameCallback`
+  instead of notifying inline. The notification therefore lands *after* `dispose()` has run.
+- Not theoretical: disposing them was implemented first and the new Android swap test failed
+  with two instances of *"A LeaderLink was used after being disposed."*, thrown from
+  `LeaderLink.notifyListeners.<anonymous closure>` inside
+  `SchedulerBinding._invokeFrameCallback`. Backing the link disposal out makes it pass.
+  Disposing them removes no leak; it converts a quiet one into a frame-time assertion on a
+  client that did nothing wrong.
+- Every one of them really is a live `Leader`'s link, so none is a special case: Android's
+  `collapsedHandleFocalPoint` and the two expanded-handle links in
+  `AndroidHandlesDocumentLayer`, `toolbarFocalPoint` in
+  `AndroidToolbarFocalPointDocumentLayer`, `magnifierFocalPoint` in
+  `SuperEditorAndroidControlsOverlayManagerState`; iOS's `magnifierFocalPoint` in
+  `IosDocumentTouchInteractor` and `toolbarFocalPoint` in `IosToolbarFocalPointDocumentLayer`.
+- Independently, three of the Android links are *not the controller's to release*:
+  `collapsedHandleFocalPoint`, `upstreamHandleFocalPoint` and `downstreamHandleFocalPoint` are
+  constructor parameters, defaulted to a fresh `LeaderLink()` only when omitted. A caller that
+  supplies its own keeps using it afterwards. Ownership tracking was written and then dropped
+  with the rest, because the frame-timing reason above rules the defaulted links out anyway.
+- The leak is small and does not pin a tree: a `LeaderLink` holds listener registrations and a
+  few cached geometry values, and its `RenderLeader`/`RenderFollower` listeners unregister
+  themselves in `detach()`, so an abandoned link is collected along with the controller.
+
+**Audited and left as-is, now stated in the doc comment rather than left ambiguous**: iOS
+disposes `floatingCursorController` unconditionally although it too is constructor-injectable —
+the mirror image of the Android link problem. Guarding it would change behaviour for an
+external caller for a bug nobody has hit, so the comment records it as the controller's
+contract (pass one and you hand over its lifetime) instead.
+
+**Why MemNote cares**: `super_note_editor_panel.dart` owns both controllers and rebuilds them
+from `didChangeDependencies` whenever `textSelectionTheme.selectionHandleColor` changes,
+disposing the outgoing pair on the spot while the editor beneath stays mounted. MemNote ships
+five user-selectable color themes, so that is an everyday action, and it abandoned one Android
+controller and one iOS controller per theme change.
+
+**Genuine upstream candidate**, same as NOTE-141: upstream's own teardown, finished on
+upstream's own terms. Not submitted.
+
+Tests: `super_editor/test/super_editor/mobile/super_editor_android_overlay_controls_test.dart`
+and `.../super_editor_ios_overlay_controls_test.dart` — four new tests. Group
+"layer lifecycle >" gains "keeps working after the app disposes and replaces the controls
+controller" on each platform, which reproduces MemNote's arrangement (a test-local
+`_ThemedAppOwnedControlsScope` / `_ThemedAppOwnedIosControlsScope` disposes and replaces the
+controller when an ambient handle color changes, with the caret placed so a `Leader` is live);
+these are the tests that fail if the `LeaderLink`s are disposed. A new group
+"controller lifecycle >" adds "disposes every notifier it owns, and leaves the `LeaderLink`s
+alone" on each platform — `addListener` throws for everything released and returns normally for
+everything deliberately kept — and, on Android, "doesn't dispose a `LeaderLink` that the caller
+supplied". Fork suite: 5668 passing, 7 skipped (5663 before these five).
 
 ## App-specific (not for upstream)
 

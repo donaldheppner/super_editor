@@ -131,9 +131,55 @@ class SuperEditorAndroidControlsController {
         upstreamHandleFocalPoint = upstreamHandleFocalPoint ?? LeaderLink(),
         downstreamHandleFocalPoint = downstreamHandleFocalPoint ?? LeaderLink();
 
+  /// Releases every [ChangeNotifier] that this controller both created and can safely
+  /// release - which is all of them except the [LeaderLink]s.
+  ///
+  /// Each notifier below is only ever subscribed to from the widget build phase, by widgets
+  /// that keep a matching `removeListener` (see [AndroidControlsDocumentLayerState] and the
+  /// `ValueListenableBuilder`s in [SuperEditorAndroidControlsOverlayManagerState]). A
+  /// client that replaces one controller with another - as an app does when it owns the
+  /// [SuperEditorAndroidControlsScope] and the controller carries a themed
+  /// [controlsColor] - drops its old listeners in the same build that adds the new ones,
+  /// and `ChangeNotifier.removeListener` is explicitly allowed on a disposed notifier.
+  ///
+  /// The five [LeaderLink]s are deliberately left undisposed, and are therefore leaked when
+  /// a controller is thrown away. Two reasons, either of which is sufficient:
+  ///
+  ///  * **A `RenderLeader` writes to its link outside the build phase, and `LeaderLink`
+  ///    defers those notifications past the end of the frame.** Every one of these links is
+  ///    the `link` of a `Leader` inside `SuperEditor` - [collapsedHandleFocalPoint] and the
+  ///    two expanded-handle links in `AndroidHandlesDocumentLayer`, [toolbarFocalPoint] in
+  ///    `AndroidToolbarFocalPointDocumentLayer`, [magnifierFocalPoint] in
+  ///    [SuperEditorAndroidControlsOverlayManagerState]. `RenderLeader.performLayout` sets
+  ///    `link.leaderSize`, `paint` sets `link.offset` and `link.scale`, and
+  ///    `RenderLeader.set link` clears `leaderSize` on the *outgoing* link - and that last
+  ///    one runs during the very build that swaps this controller out. Each of those
+  ///    setters calls `LeaderLink.notifyListeners`, which - while the scheduler is in
+  ///    `SchedulerPhase.persistentCallbacks` - re-posts itself through
+  ///    `addPostFrameCallback` instead of notifying inline. So the notification lands
+  ///    *after* `dispose()` has run, on a link nobody can un-notify, and Flutter reports
+  ///    "A LeaderLink was used after being disposed." Disposing them here does not remove a
+  ///    leak; it converts a quiet one into a frame-time assertion on a client that did
+  ///    nothing wrong.
+  ///
+  ///  * **Three of them may not belong to this controller at all.**
+  ///    [collapsedHandleFocalPoint], [upstreamHandleFocalPoint] and
+  ///    [downstreamHandleFocalPoint] are constructor parameters; when a caller supplies its
+  ///    own link it keeps using it after this controller is gone, so this controller is not
+  ///    the one entitled to end its life.
+  ///
+  /// A `LeaderLink` holds only listener registrations and a few cached geometry values, and
+  /// its listeners are `RenderLeader`/`RenderFollower` objects that unregister themselves in
+  /// `detach()`. So an abandoned link goes to the garbage collector with the controller
+  /// rather than pinning a widget tree.
   void dispose() {
     cancelCollapsedHandleAutoHideCountdown();
+
     _shouldCaretBlink.dispose();
+    caretJumpToOpaqueSignal.dispose();
+    _shouldShowCollapsedHandle.dispose();
+    _shouldShowExpandedHandles.dispose();
+    _areSelectionHandlesAllowed.dispose();
     _shouldShowMagnifier.dispose();
     _shouldShowToolbar.dispose();
   }
@@ -170,6 +216,8 @@ class SuperEditorAndroidControlsController {
   /// The focal point for the collapsed drag handle.
   ///
   /// The collapsed handle builder should place the handle near this focal point.
+  ///
+  /// Not released by [dispose] - see that method for why.
   final LeaderLink collapsedHandleFocalPoint;
 
   /// Whether the collapsed drag handle should be displayed right now.
@@ -230,11 +278,15 @@ class SuperEditorAndroidControlsController {
   /// The focal point for the upstream drag handle, when the selection is expanded.
   ///
   /// The upstream handle builder should place its handle near this focal point.
+  ///
+  /// Not released by [dispose] - see that method for why.
   final LeaderLink upstreamHandleFocalPoint;
 
   /// The focal point for the downstream drag handle, when the selection is expanded.
   ///
   /// The downstream handle builder should place its handle near this focal point.
+  ///
+  /// Not released by [dispose] - see that method for why.
   final LeaderLink downstreamHandleFocalPoint;
 
   /// Whether the expanded drag handles should be displayed right now.
@@ -306,6 +358,8 @@ class SuperEditorAndroidControlsController {
   /// Link to a location where a magnifier should be focused.
   ///
   /// The magnifier builder should place the magnifier near this focal point.
+  ///
+  /// Not released by [dispose] - see that method for why.
   final magnifierFocalPoint = LeaderLink();
 
   /// (Optional) Builder to create the visual representation of the magnifier.
@@ -331,6 +385,8 @@ class SuperEditorAndroidControlsController {
   /// This link probably points to a rectangle, such as a bounding rectangle
   /// around the user's selection. Therefore, the toolbar builder shouldn't
   /// assume that this focal point is a single pixel.
+  ///
+  /// Not released by [dispose] - see that method for why.
   final toolbarFocalPoint = LeaderLink();
 
   /// (Optional) Builder to create the visual representation of the floating
