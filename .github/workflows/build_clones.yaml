@@ -23,7 +23,6 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
 
       # Download all the packages that the app uses
       - run: flutter pub get
@@ -46,7 +45,6 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
 
       # Download all the packages that the app uses
       - run: flutter pub get
@@ -69,7 +67,6 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
 
       # Download all the packages that the app uses
       - run: flutter pub get
@@ -92,7 +89,6 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
 
       # Download all the packages that the app uses
       - run: flutter pub get
@@ -115,7 +111,6 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
 
       # Download all the packages that the app uses
       - run: flutter pub get
@@ -138,7 +133,6 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
 
       # Download all the packages that the app uses
       - run: flutter pub get

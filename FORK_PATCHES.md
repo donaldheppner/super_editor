@@ -74,6 +74,27 @@ that has `TextInputStyle`, bump `FLUTTER_VERSION` and re-apply upstream
 the pin is that fork CI no longer warns about Flutter breaking changes ahead of
 MemNote adopting them; the warning arrives at the upgrade instead.
 
+Two consequences of the pin needed handling in the same change, and both are
+maintenance the next Flutter bump inherits:
+
+- **Ten goldens were regenerated for 3.41.4.** `test_goldens/` is otherwise
+  byte-identical to upstream, whose images are generated against `master`; under
+  the pin nine spelling/grammar underline goldens and the two iOS magnifier
+  screen-edge goldens were 4px-to-510px off. They were regenerated *on the
+  ubuntu-latest runner that verifies them* (a throwaway `--update-goldens` step,
+  reverted in the same branch), because the fork's own
+  `super_editor/test_goldens_update.sh` needs the `goldens` CLI and its Docker
+  image, which no MemNote machine has. Only the ten images the failing tests read
+  were taken; the other fourteen the regeneration rewrote still pass on
+  upstream's bytes and were left alone, so the divergence stays as small as it
+  can be.
+- **`architecture: x64` is gone from the clone builds.** `macos-latest` is arm64
+  now, so that line installed a Rosetta x64 SDK; 3.41.4 then asked `xcodebuild`
+  for a `{ platform:macOS, arch:arm64 }` destination the Rosetta'd toolchain does
+  not offer, and five of the six clone builds died on it — including
+  `build_obsidian`, which had been passing. `test_mac` still carries the line and
+  still passes, so it was left alone.
+
 Two workflows are expected not to run. `Cherry pick to stable` is gated to the
 upstream repository — this fork keeps no maintained `stable` branch, so it went
 red on every merge to fork `main` and could never have passed. `AI Code Review`
