@@ -533,6 +533,76 @@ with the two exceptions quoted above), 10 passing after. The fork suite goes fro
 call (it picks one desktop platform), `testWidgetsOnAllPlatforms` emits five, so two calls
 go from 2 tests to 10.
 
+### Android controls layer: unsubscribe from the caret-jump signal on dispose (MemNote NOTE-141)
+
+`super_editor/lib/src/infrastructure/platforms/android/android_document_controls.dart`
+
+`AndroidControlsDocumentLayerState.didChangeDependencies` subscribes to four things on the
+shared `SuperEditorAndroidControlsController`, and removes all four before re-subscribing to a
+replacement controller. `dispose()` removed only three — `caretJumpToOpaqueSignal` was never
+unsubscribed.
+
+- The leaked listener is `_caretJumpToOpaque`, which calls `jumpToOpaque()` on the state's
+  `_caretBlinkController` — the `BlinkController` that `dispose()` disposes two lines further
+  down. So a dead layer stays registered on a live controller while holding a dead notifier,
+  and the next `jumpCaretToOpaque()` walks into `ChangeNotifier.debugAssertNotDisposed`:
+  *"A BlinkController was used after being disposed."* It is thrown while `SignalNotifier`
+  dispatches, so it is reported rather than fatal, but every listener queued after the stale
+  one loses that caret jump, and the leak is cumulative — one more dead listener per teardown.
+
+- It needs the controls controller to outlive the layer, which is the ordinary case rather
+  than an exotic one. `SuperEditor` holds `_androidControlsController` on its own `State`, so
+  any rebuild that re-inflates the handles layer without re-inflating `SuperEditor` leaks one;
+  and `_buildGestureControlsScope`'s doc comment explicitly invites an app to supply the scope
+  from higher up, in which case the controller outlives `SuperEditor` itself.
+
+- MemNote is that second case, and reaches it through an everyday action.
+  `super_note_editor_panel.dart` owns `_androidControlsController` and wraps `SuperEditor` in
+  its own `SuperEditorAndroidControlsScope` — and `SuperEditorAndroidControlsScope.rootOf`
+  resolves to the *root-most* scope, so the layer binds to the app's controller, not to
+  `SuperEditor`'s. Toggling the editor between visual and markdown mode swaps the entire
+  `SuperEditor` subtree out and back while the panel state stays alive, so every round trip
+  leaks a listener and the next caret move reports the assertion. The field crash arrived via
+  `MultiListItemTabImeOverrides` -> `Editor.endTransaction` ->
+  `PausableValueNotifier.resumeNotifications` -> `_onSelectionChange` -> `jumpCaretToOpaque()`,
+  but the IME is incidental — a tap, an arrow key or a keystroke reaches the same signal.
+
+- The three surviving `_controlsController!` unwraps in `dispose()` became `?.`, matching the
+  `?.` already on the `shouldCaretBlink` line above them. Inert either way, since
+  `_controlsController` is assigned in `didChangeDependencies` and that always runs before
+  `dispose()` for an element that mounted — but one method should not disagree with itself
+  about whether its own field is nullable.
+
+- **Checked, since a missing pair is the kind of defect that comes in copies**:
+  `IosControlsDocumentLayerState` has no equivalent — the iOS controller carries no caret-jump
+  signal, and every `addListener` on that layer has its `removeListener` in `dispose()`.
+  `SuperMessageAndroidControlsDocumentLayerState`
+  (`chat/super_message_android_overlays.dart`), the near-copy NOTE-116 had to fix in parallel,
+  subscribes only to `areSelectionHandlesAllowed` and does remove it.
+  `_AndroidDocumentTouchInteractorState` and `SuperEditorAndroidControlsOverlayManagerState`
+  read the controller but register nothing on it. This is the only unbalanced pair.
+
+- **Deliberately left alone**: `SuperEditorAndroidControlsController.dispose()` disposes
+  `_shouldCaretBlink`, `_shouldShowMagnifier` and `_shouldShowToolbar` while leaving
+  `caretJumpToOpaqueSignal`, `_shouldShowCollapsedHandle`, `_shouldShowExpandedHandles`,
+  `_areSelectionHandlesAllowed` and three `LeaderLink`s undisposed. A real leak, but the
+  controller's own bookkeeping rather than this crash class, and disposing more from there
+  would newly assert on any client that still touches a controller it has released. Its own
+  ticket, not a rider on a crash fix.
+
+- **Genuine upstream candidate**: a teardown omission on upstream's own widget, with
+  upstream's own `didChangeDependencies` standing as the evidence of intent. Not submitted.
+
+Tests: `super_editor/test/super_editor/mobile/super_editor_android_overlay_controls_test.dart`,
+group "SuperEditor > Android > overlay controls > layer lifecycle >", one test —
+"doesn't jump a disposed caret to opaque after the editor is replaced". It builds MemNote's
+arrangement rather than the harness's, because the harness owns its controls controller inside
+the same widget as the `SuperEditor` and so tears both down together: a test-local
+`_AppOwnedControlsScope` holds the `SuperEditorAndroidControlsController`, swaps `SuperEditor`
+for a `SizedBox` and back, and then moves the caret. On the pre-fix code it fails with exactly
+the production message ("A BlinkController was used after being disposed."); it passes after.
+Fork suite: 5658 passing, 7 skipped.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

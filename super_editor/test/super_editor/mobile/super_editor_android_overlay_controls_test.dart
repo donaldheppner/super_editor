@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_test_robots/flutter_test_robots.dart';
@@ -11,6 +12,7 @@ import 'package:super_text_layout/super_text_layout.dart';
 
 import '../../test_runners.dart';
 import '../../test_tools.dart';
+import '../test_documents.dart';
 
 void main() {
   group("SuperEditor > Android > overlay controls >", () {
@@ -841,7 +843,100 @@ void main() {
         expect(SuperEditorInspector.isMobileToolbarVisible(), isTrue);
       });
     });
+
+    group("layer lifecycle >", () {
+      testWidgetsOnAndroid("doesn't jump a disposed caret to opaque after the editor is replaced", (tester) async {
+        // An app is free to own the Android controls scope itself and hang it above
+        // SuperEditor, in which case the controller outlives whatever editor sits beneath it.
+        // Taking the editor away and putting it back must not leave the old handles layer
+        // subscribed to that controller - the layer's BlinkController is disposed with it.
+        final isEditorVisible = ValueNotifier<bool>(true);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: _AppOwnedControlsScope(isEditorVisible: isEditorVisible),
+            ),
+          ),
+        );
+
+        // Place the caret, so the handles layer has a collapsed selection to compare against.
+        await tester.placeCaretInParagraph("1", 0);
+
+        // Replace the editor with another widget, then bring it back. The layer that was
+        // showing the caret is disposed and a new one takes its place, while the controls
+        // controller above them both stays alive.
+        isEditorVisible.value = false;
+        await tester.pumpAndSettle();
+        isEditorVisible.value = true;
+        await tester.pumpAndSettle();
+
+        // Move the caret. The layer reacts by asking the controller to make the caret
+        // opaque, which notifies every listener on the controller's shared signal.
+        await tester.placeCaretInParagraph("1", 0);
+        await tester.placeCaretInParagraph("1", 200);
+
+        // Ensure the disposed layer's BlinkController wasn't one of them.
+        expect(tester.takeException(), isNull);
+      });
+    });
   });
+}
+
+/// Displays a [SuperEditor] beneath an app-owned [SuperEditorAndroidControlsScope], and
+/// swaps the editor out for a placeholder whenever [isEditorVisible] goes `false`.
+///
+/// The controls controller belongs to this widget, not to the [SuperEditor] below it, so it
+/// survives every one of those swaps - the arrangement an app uses when it wants to drive
+/// the Android handles itself.
+class _AppOwnedControlsScope extends StatefulWidget {
+  const _AppOwnedControlsScope({
+    required this.isEditorVisible,
+  });
+
+  final ValueListenable<bool> isEditorVisible;
+
+  @override
+  State<_AppOwnedControlsScope> createState() => _AppOwnedControlsScopeState();
+}
+
+class _AppOwnedControlsScopeState extends State<_AppOwnedControlsScope> {
+  late final MutableDocumentComposer _composer;
+  late final Editor _editor;
+  late final SuperEditorAndroidControlsController _controlsController;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _composer = MutableDocumentComposer();
+    _editor = createDefaultDocumentEditor(document: singleParagraphDoc(), composer: _composer);
+    _controlsController = SuperEditorAndroidControlsController();
+  }
+
+  @override
+  void dispose() {
+    _controlsController.dispose();
+
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SuperEditorAndroidControlsScope(
+      controller: _controlsController,
+      child: ValueListenableBuilder<bool>(
+        valueListenable: widget.isEditorVisible,
+        builder: (context, isEditorVisible, child) {
+          if (!isEditorVisible) {
+            return const SizedBox.expand();
+          }
+
+          return SuperEditor(editor: _editor);
+        },
+      ),
+    );
+  }
 }
 
 Future<TestDocumentContext> _pumpSingleParagraphApp(

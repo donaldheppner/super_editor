@@ -239,8 +239,15 @@ class AndroidControlsDocumentLayerState
   void dispose() {
     widget.selection.removeListener(_onSelectionChange);
     _controlsController?.shouldCaretBlink.removeListener(_onBlinkModeChange);
-    _controlsController!.shouldShowCollapsedHandle.removeListener(_onShouldShowCollapsedHandleChange);
-    _controlsController!.areSelectionHandlesAllowed.removeListener(_onSelectionHandlesAllowedChange);
+    // Every listener registered in didChangeDependencies has to come off here, not just
+    // the three below. The controls controller routinely outlives this layer: SuperEditor
+    // holds it on its own State, and an app may supply one from even higher up (see
+    // SuperEditor._buildGestureControlsScope). A listener left behind keeps a closure over
+    // the _caretBlinkController that's disposed two lines down, so the next
+    // jumpCaretToOpaque() notifies a disposed ChangeNotifier and kills the frame.
+    _controlsController?.caretJumpToOpaqueSignal.removeListener(_caretJumpToOpaque);
+    _controlsController?.shouldShowCollapsedHandle.removeListener(_onShouldShowCollapsedHandleChange);
+    _controlsController?.areSelectionHandlesAllowed.removeListener(_onSelectionHandlesAllowedChange);
 
     _caretBlinkController.dispose();
     super.dispose();
