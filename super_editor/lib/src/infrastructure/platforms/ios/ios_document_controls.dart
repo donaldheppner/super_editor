@@ -596,6 +596,12 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
     widget.shouldCaretBlink.addListener(_onBlinkModeChange);
     widget.floatingCursorController?.isActive.addListener(_onFloatingCursorActivationChange);
     widget.handleBeingDragged?.addListener(_onDragChanged);
+    // [areSelectionHandlesAllowed] is only consulted by computeLayoutDataWithDocumentLayout,
+    // which runs during this layer's build. Without this subscription, flipping it does
+    // nothing on its own - it takes effect only if something *else* rebuilds the layer in the
+    // same frame, which no caller of preventSelectionHandles()/allowSelectionHandles() can
+    // guarantee. Android's twin has always subscribed; see AndroidControlsDocumentLayerState.
+    widget.areSelectionHandlesAllowed?.addListener(_onSelectionHandlesAllowedChange);
 
     _onBlinkModeChange();
   }
@@ -623,6 +629,11 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
       oldWidget.handleBeingDragged?.removeListener(_onDragChanged);
       widget.handleBeingDragged?.addListener(_onDragChanged);
     }
+
+    if (widget.areSelectionHandlesAllowed != oldWidget.areSelectionHandlesAllowed) {
+      oldWidget.areSelectionHandlesAllowed?.removeListener(_onSelectionHandlesAllowedChange);
+      widget.areSelectionHandlesAllowed?.addListener(_onSelectionHandlesAllowedChange);
+    }
   }
 
   @override
@@ -631,6 +642,7 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
     widget.shouldCaretBlink.removeListener(_onBlinkModeChange);
     widget.floatingCursorController?.isActive.removeListener(_onFloatingCursorActivationChange);
     widget.handleBeingDragged?.removeListener(_onDragChanged);
+    widget.areSelectionHandlesAllowed?.removeListener(_onSelectionHandlesAllowedChange);
 
     _caretBlinkController.dispose();
     super.dispose();
@@ -667,6 +679,13 @@ class IosControlsDocumentLayerState extends DocumentLayoutLayerState<IosHandlesD
   void _onDragChanged() {
     setState(() {
       // Schedule a new layout computation because we might need to hide/show the handle ball.
+    });
+  }
+
+  void _onSelectionHandlesAllowedChange() {
+    setState(() {
+      // The controller went from allowing selection handles to disallowing them, or vice versa.
+      // Rebuild this widget to show/hide the caret and handles.
     });
   }
 

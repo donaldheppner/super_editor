@@ -507,7 +507,143 @@ void main() {
       });
     });
 
+    group("selection handles allowed >", () {
+      // preventSelectionHandles()/allowSelectionHandles() are only consulted by
+      // IosControlsDocumentLayerState.computeLayoutDataWithDocumentLayout, which runs during
+      // that layer's build. Every test in this group calls them and then pumps a single
+      // frame with nothing else happening, because "nothing else happening" is the case the
+      // layer used to get wrong: before MemNote NOTE-148 the iOS layer had no subscriber at
+      // all, so these calls took effect only when some unrelated change - typically the
+      // selection change that a caller like SuperEditorIosSpellCheckerTapHandler makes
+      // immediately afterwards - happened to rebuild the layer in the same frame.
+
+      testWidgetsOnIos("hides the caret with no other trigger", (tester) async {
+        final controlsController = SuperEditorIosControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.placeCaretInParagraph("1", 0);
+        expect(SuperEditorInspector.findMobileCaret(), findsOneWidget);
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileCaret(), findsNothing);
+      });
+
+      testWidgetsOnIos("hides the expanded handles with no other trigger", (tester) async {
+        final controlsController = SuperEditorIosControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.doubleTapInParagraph("1", 0);
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsExactly(2));
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+      });
+
+      testWidgetsOnIos("brings the caret back with no other trigger", (tester) async {
+        final controlsController = SuperEditorIosControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.placeCaretInParagraph("1", 0);
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileCaret(), findsNothing);
+
+        // The reverse direction matters just as much: SuperEditorIosSpellCheckerTapHandler's
+        // _hideSpellCheckerPopover() calls allowSelectionHandles() and then only hides a
+        // popover, so there may be no selection change to ride along on.
+        controlsController.allowSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileCaret(), findsOneWidget);
+      });
+
+      testWidgetsOnIos("doesn't need an extra frame when the caller also changes the selection", (tester) async {
+        // The paths that already worked, worked by riding along on a selection change in the
+        // same frame - that is exactly what the iOS spell-checker tap handler does: hide the
+        // toolbar and magnifier, preventSelectionHandles(), then execute a
+        // ChangeSelectionRequest. Adding a subscriber must not cost those paths a second
+        // frame. It doesn't: setState is Element.markNeedsBuild, which returns early when the
+        // element is already dirty, so two setState calls before a frame produce one build.
+        final controlsController = SuperEditorIosControlsController();
+        addTearDown(controlsController.dispose);
+        final editor = await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.placeCaretInParagraph("1", 0);
+        expect(SuperEditorInspector.findMobileCaret(), findsOneWidget);
+
+        controlsController.preventSelectionHandles();
+        editor.execute([
+          const ChangeSelectionRequest(
+            DocumentSelection(
+              base: DocumentPosition(nodeId: "1", nodePosition: TextNodePosition(offset: 2)),
+              extent: DocumentPosition(nodeId: "1", nodePosition: TextNodePosition(offset: 8)),
+            ),
+            SelectionChangeType.expandSelection,
+            SelectionReason.userInteraction,
+          ),
+        ]);
+
+        // One frame settles both, and leaves no frame outstanding.
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileCaret(), findsNothing);
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+        expect(tester.binding.hasScheduledFrame, isFalse);
+      });
+    });
+
     group("layer lifecycle >", () {
+      testWidgetsOnIos("keeps honoring preventSelectionHandles after the controls controller is replaced",
+          (tester) async {
+        // NOTE-148's subscriber and NOTE-142's disposal of the very same notifier meet here.
+        // The layer now holds a listener on the outgoing controller's areSelectionHandlesAllowed
+        // at the moment the app disposes it, so this asserts that the swap moves the
+        // subscription to the replacement rather than stranding it on the dead controller.
+        final handleColor = ValueNotifier<Color>(const Color(0xFFFF0000));
+        addTearDown(handleColor.dispose);
+
+        SuperEditorIosControlsController? currentController;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: _ThemedAppOwnedIosControlsScope(
+                handleColor: handleColor,
+                onControllerCreated: (controller) => currentController = controller,
+              ),
+            ),
+          ),
+        );
+
+        await tester.placeCaretInParagraph("1", 0);
+
+        // Prevent handles on the first controller, so the layer's listener is registered on
+        // the notifier that's about to be disposed, and the layer is in the hidden state.
+        currentController!.preventSelectionHandles();
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileCaret(), findsNothing);
+
+        // Swap the controller. The replacement allows handles, so the caret comes back.
+        handleColor.value = const Color(0xFF0000FF);
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileCaret(), findsOneWidget);
+
+        // And the replacement's notifier is the live one now.
+        currentController!.preventSelectionHandles();
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileCaret(), findsNothing);
+
+        expect(tester.takeException(), isNull);
+      });
+
       testWidgetsOnIos("keeps working after the app disposes and replaces the controls controller", (tester) async {
         // An app is free to own the iOS controls scope itself and hang it above SuperEditor,
         // and to *replace* the controller while the editor beneath it stays mounted - e.g.
@@ -638,6 +774,33 @@ void main() {
       });
     });
   });
+}
+
+/// Pumps a [SuperEditor] beneath an app-owned [SuperEditorIosControlsScope] that uses the
+/// given [controlsController], so a test can drive that controller directly.
+///
+/// The scope is hung above [SuperEditor] rather than inside it because
+/// `SuperEditorIosControlsScope.rootOf` resolves the *root-most* scope - which is how an app
+/// that owns its own controls controller (MemNote does) actually reaches the editor's layers.
+Future<Editor> _pumpAppOwnedControls(
+  WidgetTester tester,
+  SuperEditorIosControlsController controlsController,
+) async {
+  final composer = MutableDocumentComposer();
+  final editor = createDefaultDocumentEditor(document: singleParagraphDoc(), composer: composer);
+
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: SuperEditorIosControlsScope(
+          controller: controlsController,
+          child: SuperEditor(editor: editor),
+        ),
+      ),
+    ),
+  );
+
+  return editor;
 }
 
 /// Displays a [SuperEditor] beneath an app-owned [SuperEditorIosControlsScope] whose

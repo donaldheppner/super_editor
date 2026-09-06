@@ -129,14 +129,19 @@ class SuperEditorIosControlsController {
   /// release - which is all of them except the two [LeaderLink]s.
   ///
   /// Each notifier below is only ever subscribed to from the widget build phase, by widgets
-  /// that keep a matching `removeListener` - see [IosHandlesDocumentLayerState], whose
-  /// `initState`/`didUpdateWidget`/`dispose` trio subscribes to [shouldCaretBlink] and
-  /// [handleBeingDragged] as a matched pair. A client that replaces one controller with
-  /// another - as an app does when it owns the [SuperEditorIosControlsScope] and the
-  /// controller carries a themed [handleColor] - drops its old listeners in the same build
-  /// that adds the new ones, and `ChangeNotifier.removeListener` is explicitly allowed on a
-  /// disposed notifier. [areSelectionHandlesAllowed] is never even subscribed to; it is only
-  /// read through `.value`.
+  /// that keep a matching `removeListener` - see `IosControlsDocumentLayerState`, whose
+  /// `initState`/`didUpdateWidget`/`dispose` trio subscribes to [shouldCaretBlink],
+  /// [handleBeingDragged] and [areSelectionHandlesAllowed] as matched pairs. A client that
+  /// replaces one controller with another - as an app does when it owns the
+  /// [SuperEditorIosControlsScope] and the controller carries a themed [handleColor] - drops
+  /// its old listeners in the same build that adds the new ones, and
+  /// `ChangeNotifier.removeListener` is explicitly allowed on a disposed notifier.
+  ///
+  /// [areSelectionHandlesAllowed] gained its subscriber in MemNote NOTE-148, after NOTE-142
+  /// had justified disposing it partly on the grounds that nothing subscribed. That does not
+  /// change the answer: the new subscription is the same build-phase, matched-pair shape that
+  /// already carries [shouldCaretBlink] and [handleBeingDragged], both of which this method
+  /// has disposed since NOTE-142 without incident.
   ///
   /// [magnifierFocalPoint] and [toolbarFocalPoint] are deliberately left undisposed, and are
   /// therefore leaked when a controller is thrown away. Both are the `link` of a `Leader`
