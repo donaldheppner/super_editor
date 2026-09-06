@@ -19,7 +19,12 @@ jobs:
     name: Cherry pick from main to stable
 
     # Only cherry pick merged PRs. Don't merge PRs marked with "no-cherry-pick" label.
-    if: ${{ github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'no-cherry-pick') }}
+    #
+    # MemNote fork (NOTE-165): the repository guard keeps this upstream-only. The fork does not
+    # maintain a "stable" branch — MemNote ships from the fork's "main" — so every merge to the
+    # fork's main produced a red "Cherry pick to stable" run that could never succeed (the cherry
+    # pick lands on an upstream "stable" that carries none of the fork's patches, so it conflicts).
+    if: ${{ github.repository == 'Flutter-Bounty-Hunters/super_editor' && github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'no-cherry-pick') }}
 
     # These ENV variables can be accessed directly when they're used in shell commands, e.g.:
     #

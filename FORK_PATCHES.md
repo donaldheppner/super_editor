@@ -44,6 +44,42 @@ Two more things a fresh clone needs:
   fork carries no patch to any of those three — the day it does, uncomment the
   `dependency_overrides` block already sitting in their pubspecs.
 
+### CI: the fork pins Flutter, and a green run is the bar (NOTE-165)
+
+Upstream's workflows install the `master` channel. This fork pins the SDK
+instead — `FLUTTER_VERSION` at the top of `.github/workflows/pr_validation.yaml`
+and `.github/workflows/build_clones.yaml`, currently `3.41.4`, which is the
+toolchain MemNote develops and ships against. **Bump both when MemNote's Flutter
+moves.** A red fork run now means the change broke something; before NOTE-165 it
+meant nothing, because every PR was red for a reason no PR had caused.
+
+The 11 jobs that were failing came in two classes, both pure SDK skew:
+
+- **Nine jobs failed to compile** with `'DocumentImeInputClient' is missing
+  implementations for … TextInputConnection.updateStyle` — and the same for
+  `ImeConnectionWithUpdateCount` in the package's own test tooling. Both derive
+  from `TextInputConnectionDecorator`, which this fork deliberately stripped of
+  `updateStyle` in fork commit `41f3b9ae`: `TextInputStyle` does not exist in
+  Flutter 3.41.4, so upstream's declaration (`b422c326`) does not compile here.
+- **Two `super_editor_spellcheck` jobs failed at `flutter pub get`.** A newer
+  `flutter_test` pins `test_api` high enough to force `analyzer >=13.0.0`, which
+  `pigeon ^26.1.2` excludes. On 3.41.4 the same pubspec resolves cleanly.
+
+That first bullet is why "just implement the missing member" is not available
+while the pin is 3.41.4 — the type the method takes does not exist in that SDK,
+and Dart has no conditional compilation for it. The pin bump and the
+`updateStyle` restore are therefore one change: **when MemNote moves to a Flutter
+that has `TextInputStyle`, bump `FLUTTER_VERSION` and re-apply upstream
+`b422c326`'s one-liner to `ime_decoration.dart` in the same commit.** The cost of
+the pin is that fork CI no longer warns about Flutter breaking changes ahead of
+MemNote adopting them; the warning arrives at the upgrade instead.
+
+Two workflows are expected not to run. `Cherry pick to stable` is gated to the
+upstream repository — this fork keeps no maintained `stable` branch, so it went
+red on every merge to fork `main` and could never have passed. `AI Code Review`
+reports `skipped` unless a PR carries the `ai-review` label *and* the repository
+holds a `GEMINI_API_KEY` secret; `skipped` is its healthy state here.
+
 ## Upstream PR status (NOTE-43)
 
 The NOTE-40/41/42 codec work below was sliced into six stacked PRs against

@@ -1,5 +1,12 @@
 name: Build Clones
 on: [pull_request]
+
+# MemNote fork (NOTE-165): this fork pins the Flutter SDK instead of tracking the
+# "master" channel that upstream uses. See the CI section of FORK_PATCHES.md for why.
+# Bump FLUTTER_VERSION here and in pr_validation.yaml whenever MemNote's toolchain moves.
+env:
+  FLUTTER_VERSION: "3.41.4"
+
 jobs:
   build_bear:
     runs-on: macos-latest
@@ -14,7 +21,8 @@ jobs:
       # Setup Flutter environment
       - uses: subosito/flutter-action@v2
         with:
-          channel: "master"
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
       # Download all the packages that the app uses
@@ -36,7 +44,8 @@ jobs:
       # Setup Flutter environment
       - uses: subosito/flutter-action@v2
         with:
-          channel: "master"
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
       # Download all the packages that the app uses
@@ -58,7 +67,8 @@ jobs:
       # Setup Flutter environment
       - uses: subosito/flutter-action@v2
         with:
-          channel: "master"
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
       # Download all the packages that the app uses
@@ -80,7 +90,8 @@ jobs:
       # Setup Flutter environment
       - uses: subosito/flutter-action@v2
         with:
-          channel: "master"
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
       # Download all the packages that the app uses
@@ -102,7 +113,8 @@ jobs:
       # Setup Flutter environment
       - uses: subosito/flutter-action@v2
         with:
-          channel: "master"
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
       # Download all the packages that the app uses
@@ -124,7 +136,8 @@ jobs:
       # Setup Flutter environment
       - uses: subosito/flutter-action@v2
         with:
-          channel: "master"
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
       # Download all the packages that the app uses
