@@ -219,17 +219,88 @@ void main() {
       });
     });
 
+    group('indent rule >', () {
+      // `canIndentListItem`: a list item may indent only under another list item,
+      // and only to one level deeper than it. Same rule `IndentTaskCommand`
+      // applies to tasks, and the same set of nestings a list representation can
+      // actually store.
+
+      testWidgetsOnArbitraryDesktop("indents one level under the item above", (tester) async {
+        await _pumpTwoListItems(tester, firstIndent: 0, secondIndent: 0);
+
+        await tester.placeCaretInParagraph("2", 0);
+        await tester.pressTab();
+
+        expect(SuperEditorInspector.findDocument()!.getNodeAt(1)!.asListItem.indent, 1);
+      });
+
+      testWidgetsOnArbitraryDesktop("doesn't indent an item with nothing above it", (tester) async {
+        await _pumpTwoListItems(tester, firstIndent: 0, secondIndent: 0);
+
+        // The first node of the document has nothing to nest under.
+        await tester.placeCaretInParagraph("1", 0);
+        await tester.pressTab();
+
+        expect(SuperEditorInspector.findDocument()!.first.asListItem.indent, 0);
+      });
+
+      testWidgetsOnArbitraryDesktop("doesn't indent an item that sits below a non-list node", (tester) async {
+        await tester
+            .createDocument()
+            .withCustomContent(
+              MutableDocument(
+                nodes: [
+                  ParagraphNode(id: "1", text: AttributedText("A paragraph.")),
+                  ListItemNode.unordered(id: "2", text: AttributedText("A list item.")),
+                ],
+              ),
+            )
+            .pump();
+
+        await tester.placeCaretInParagraph("2", 0);
+        await tester.pressTab();
+
+        expect(SuperEditorInspector.findDocument()!.getNodeAt(1)!.asListItem.indent, 0);
+      });
+
+      testWidgetsOnArbitraryDesktop("doesn't skip a level below the item above", (tester) async {
+        await _pumpTwoListItems(tester, firstIndent: 0, secondIndent: 1);
+
+        // The second item is already one level below the first, which is as deep
+        // as it's allowed to sit.
+        await tester.placeCaretInParagraph("2", 0);
+        await tester.pressTab();
+
+        expect(SuperEditorInspector.findDocument()!.getNodeAt(1)!.asListItem.indent, 1);
+      });
+
+      testWidgetsOnArbitraryDesktop("stops at the maximum indent level", (tester) async {
+        await _pumpTwoListItems(tester, firstIndent: 6, secondIndent: 6);
+
+        await tester.placeCaretInParagraph("2", 0);
+        await tester.pressTab();
+
+        expect(SuperEditorInspector.findDocument()!.getNodeAt(1)!.asListItem.indent, 6);
+      });
+    });
+
     group('unordered list', () {
       testWidgetsOnDesktop('updates caret position when indenting', (tester) async {
         await _pumpOrderedListWithTextField(tester);
 
         final doc = SuperEditorInspector.findDocument()!;
 
-        // Place caret at the first list item, which has one level of indentation.
-        await tester.placeCaretInParagraph(doc.first.id, 0);
+        // Place caret at the SECOND list item, at the first level of indentation.
+        //
+        // It's the second item rather than the first because a list item may only
+        // indent when there's another list item immediately above it to nest under
+        // (`canIndentListItem`), and the first item of a document has nothing above
+        // it. The caret positioning this test measures is the same either way.
+        final indentingItem = doc.getNodeAt(1)!;
+        await tester.placeCaretInParagraph(indentingItem.id, 0);
 
         // Ensure the list item has first level of indentation.
-        expect(doc.first.asListItem.indent, 0);
+        expect(indentingItem.asListItem.indent, 0);
 
         // Ensure the caret is initially positioned near the upstream edge of the first
         // character of the list item.
@@ -238,7 +309,7 @@ void main() {
         // exact caret positioning might change and we don't want that to break this test.
         final caretOffsetBeforeIndent = SuperEditorInspector.findCaretOffsetInDocument();
         final firstCharacterRectBeforeIndent = SuperEditorInspector.findDocumentLayout().getRectForPosition(
-          DocumentPosition(nodeId: doc.first.id, nodePosition: const TextNodePosition(offset: 0)),
+          DocumentPosition(nodeId: indentingItem.id, nodePosition: const TextNodePosition(offset: 0)),
         )!;
         expect(caretOffsetBeforeIndent.dx, moreOrLessEquals(firstCharacterRectBeforeIndent.left, epsilon: 5));
 
@@ -246,7 +317,7 @@ void main() {
         await tester.pressTab();
 
         // Ensure the list item has second level of indentation.
-        expect(doc.first.asListItem.indent, 1);
+        expect(doc.getNodeAt(1)!.asListItem.indent, 1);
 
         // Ensure that the caret's current offset is downstream from the initial caret offset,
         // and also that the current caret offset is roughly positioned near the upstream edge
@@ -257,7 +328,7 @@ void main() {
         final caretOffsetAfterIndent = SuperEditorInspector.findCaretOffsetInDocument();
         expect(caretOffsetAfterIndent.dx, greaterThan(caretOffsetBeforeIndent.dx));
         final firstCharacterRectAfterIndent = SuperEditorInspector.findDocumentLayout().getRectForPosition(
-          DocumentPosition(nodeId: doc.first.id, nodePosition: const TextNodePosition(offset: 0)),
+          DocumentPosition(nodeId: indentingItem.id, nodePosition: const TextNodePosition(offset: 0)),
         )!;
         expect(caretOffsetAfterIndent.dx, moreOrLessEquals(firstCharacterRectAfterIndent.left, epsilon: 5));
       });
@@ -842,11 +913,17 @@ A paragraph
 
         final doc = SuperEditorInspector.findDocument()!;
 
-        // Place caret at the first list item, which has one level of indentation.
-        await tester.placeCaretInParagraph(doc.first.id, 0);
+        // Place caret at the SECOND list item, at the first level of indentation.
+        //
+        // It's the second item rather than the first because a list item may only
+        // indent when there's another list item immediately above it to nest under
+        // (`canIndentListItem`), and the first item of a document has nothing above
+        // it. The caret positioning this test measures is the same either way.
+        final indentingItem = doc.getNodeAt(1)!;
+        await tester.placeCaretInParagraph(indentingItem.id, 0);
 
         // Ensure the list item has first level of indentation.
-        expect(doc.first.asListItem.indent, 0);
+        expect(indentingItem.asListItem.indent, 0);
 
         // Ensure the caret is initially positioned near the upstream edge of the first
         // character of the list item.
@@ -855,7 +932,7 @@ A paragraph
         // exact caret positioning might change and we don't want that to break this test.
         final caretOffsetBeforeIndent = SuperEditorInspector.findCaretOffsetInDocument();
         final firstCharacterRectBeforeIndent = SuperEditorInspector.findDocumentLayout().getRectForPosition(
-          DocumentPosition(nodeId: doc.first.id, nodePosition: const TextNodePosition(offset: 0)),
+          DocumentPosition(nodeId: indentingItem.id, nodePosition: const TextNodePosition(offset: 0)),
         )!;
         expect(caretOffsetBeforeIndent.dx, moreOrLessEquals(firstCharacterRectBeforeIndent.left, epsilon: 5));
 
@@ -863,7 +940,7 @@ A paragraph
         await tester.pressTab();
 
         // Ensure the list item has second level of indentation.
-        expect(doc.first.asListItem.indent, 1);
+        expect(doc.getNodeAt(1)!.asListItem.indent, 1);
 
         // Ensure that the caret's current offset is downstream from the initial caret offset,
         // and also that the current caret offset is roughly positioned near the upstream edge
@@ -874,7 +951,7 @@ A paragraph
         final caretOffsetAfterIndent = SuperEditorInspector.findCaretOffsetInDocument();
         expect(caretOffsetAfterIndent.dx, greaterThan(caretOffsetBeforeIndent.dx));
         final firstCharacterRectAfterIndent = SuperEditorInspector.findDocumentLayout().getRectForPosition(
-          DocumentPosition(nodeId: doc.first.id, nodePosition: const TextNodePosition(offset: 0)),
+          DocumentPosition(nodeId: indentingItem.id, nodePosition: const TextNodePosition(offset: 0)),
         )!;
         expect(caretOffsetAfterIndent.dx, moreOrLessEquals(firstCharacterRectAfterIndent.left, epsilon: 5));
       });
@@ -1236,6 +1313,29 @@ A paragraph
 /// The first two items have one level of indentation.
 ///
 /// The last two items have two levels of indentation.
+/// Pumps a [SuperEditor] containing exactly two unordered list items, with ids
+/// "1" and "2", at the given indent levels.
+///
+/// Built from nodes rather than from markdown because the indent rule's whole
+/// point is that some of these arrangements have no markdown to be built from.
+Future<TestDocumentContext> _pumpTwoListItems(
+  WidgetTester tester, {
+  required int firstIndent,
+  required int secondIndent,
+}) async {
+  return await tester
+      .createDocument()
+      .withCustomContent(
+        MutableDocument(
+          nodes: [
+            ListItemNode.unordered(id: "1", text: AttributedText("List item 1"), indent: firstIndent),
+            ListItemNode.unordered(id: "2", text: AttributedText("List item 2"), indent: secondIndent),
+          ],
+        ),
+      )
+      .pump();
+}
+
 Future<TestDocumentContext> _pumpUnorderedList(
   WidgetTester tester, {
   Stylesheet? styleSheet,

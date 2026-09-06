@@ -971,6 +971,41 @@ String _intToAlpha(int num) {
   return result;
 }
 
+/// The deepest indent level a [ListItemNode] may hold.
+const _maxListItemIndent = 6;
+
+/// Whether [item] is allowed to indent one more level within [document].
+///
+/// A list item may indent only when the node immediately above it is another
+/// [ListItemNode], and then only to at most one level deeper than that item.
+/// The whole ladder is additionally capped at [_maxListItemIndent].
+///
+/// This is the rule `IndentTaskCommand` already applies to tasks, and it exists
+/// for the same reason: a list's indentation is structural, not decorative. An
+/// item indented with nothing above it to nest under, or more than one level
+/// below the item above it, describes a nesting that no list representation can
+/// hold. Round-tripping such a document through this package's own markdown
+/// codec makes that concrete — a leading item at indent 1 comes back at 0, a
+/// leading item at indent 3 comes back as a paragraph of literal text (4+
+/// leading spaces with no open list is an indented code block in CommonMark),
+/// and an item three levels under an indent-0 item is swallowed into that
+/// item's text as a continuation line. Refusing the indent up front is what
+/// keeps the editable states and the storable states the same set.
+bool canIndentListItem(Document document, ListItemNode item) {
+  if (item.indent >= _maxListItemIndent) {
+    return false;
+  }
+
+  final itemAbove = document.getNodeBefore(item);
+  if (itemAbove is! ListItemNode) {
+    // There's no list item above this one, therefore it has nothing to nest under.
+    return false;
+  }
+
+  // At most one level deeper than the item above.
+  return item.indent < itemAbove.indent + 1;
+}
+
 class IndentListItemRequest implements EditRequest {
   IndentListItemRequest({
     required this.nodeId,
@@ -992,16 +1027,29 @@ class IndentListItemCommand extends EditCommand {
   @override
   void execute(EditContext context, CommandExecutor executor) {
     final document = context.document;
-    final node = document.getNodeById(nodeId);
-    final listItem = node as ListItemNode;
-    if (listItem.indent >= 6) {
-      _log.log('IndentListItemCommand', 'WARNING: Editor does not support an indent level beyond 6.');
+    final listItem = document.getNodeById(nodeId);
+    if (listItem is! ListItemNode) {
+      // The specified node isn't a list item. Nothing for us to indent.
+      return;
+    }
+
+    if (listItem.indent >= _maxListItemIndent) {
+      _log.log(
+        'IndentListItemCommand',
+        'WARNING: Editor does not support an indent level beyond $_maxListItemIndent.',
+      );
+      return;
+    }
+
+    if (!canIndentListItem(document, listItem)) {
+      // Either there's no list item above this one to nest under, or this item
+      // already sits as deep as the item above it allows. See [canIndentListItem].
       return;
     }
 
     document.replaceNodeById(
-      node.id,
-      node.copyListItemWith(
+      listItem.id,
+      listItem.copyListItemWith(
         indent: listItem.indent + 1,
       ),
     );
@@ -1348,6 +1396,14 @@ class SplitListItemIntention extends Intention {
   SplitListItemIntention.end() : super.end();
 }
 
+/// Indents the selected list item on Tab, and falls through when that list item
+/// isn't allowed to indent.
+///
+/// The fall-through matters: [CommonEditorOperations.indentListItem] reports
+/// `false` both for "the selection isn't in a list item" and for "this list item
+/// has nothing above it to nest under" ([canIndentListItem]), so a blocked Tab
+/// stays available to the handlers registered after this one instead of being
+/// consumed by a no-op. `tabToIndentTask` behaves the same way for tasks.
 ExecutionInstruction tabToIndentListItem({
   required SuperEditorContext editContext,
   required KeyEvent keyEvent,

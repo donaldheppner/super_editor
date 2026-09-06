@@ -819,30 +819,36 @@ void main() {
       final context = await _pumpUnorderedList(tester);
       final document = context.document;
 
-      // Ensure we started with indentation level 0.
-      expect(document.first.asListItem.indent, 0);
+      // Indent the SECOND list item, not the first: a list item may only indent
+      // when there's another list item immediately above it to nest under
+      // (`canIndentListItem`), and the first item of a document has nothing
+      // above it.
+      final listItem = document.getNodeAt(1)!;
 
-      await tester.placeCaretInParagraph(document.first.id, 0);
+      // Ensure we started with indentation level 0.
+      expect(listItem.asListItem.indent, 0);
+
+      await tester.placeCaretInParagraph(listItem.id, 0);
 
       // Simulate the user pressing TAB on the software keyboard.
       await tester.typeImeText("\t");
 
       // Ensure we indented the list item.
-      expect(document.first.asListItem.indent, 1);
+      expect(document.getNodeAt(1)!.asListItem.indent, 1);
 
       // Ensure the selection didn't change.
       expect(
         SuperEditorInspector.findDocumentSelection(),
         DocumentSelection.collapsed(
           position: DocumentPosition(
-            nodeId: document.first.id,
+            nodeId: listItem.id,
             nodePosition: const TextNodePosition(offset: 0),
           ),
         ),
       );
 
       // Ensure the content of the list item didn't change.
-      expect(document.first.asListItem.text.toPlainText(), 'list item 1');
+      expect(document.getNodeAt(1)!.asListItem.text.toPlainText(), 'list item 2');
     });
   });
 

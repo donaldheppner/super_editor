@@ -2132,11 +2132,22 @@ class CommonEditorOperations {
   }
 
   /// Indents the list item at the current selection extent, if the entire
-  /// selection sits within a [ListItemNode].
+  /// selection sits within a [ListItemNode] that [canIndentListItem] permits to
+  /// move.
   ///
-  /// Returns [true] if a list item was indented. Returns [false] if
-  /// the selection extent did not sit in a list item, or if the selection
-  /// included more than just a list item.
+  /// Returns [true] if a list item was indented. Returns [false] if the
+  /// selection extent did not sit in a list item, if the selection included
+  /// more than just a list item, or if the list item isn't allowed to indent —
+  /// there is no list item above it to nest under, or it already sits as deep
+  /// as the item above it allows.
+  ///
+  /// Reporting that refusal is as much of this method's job as making it: the
+  /// Tab handlers turn this bool into halt-vs-continue, so a Tab that indented
+  /// nothing has to fall through rather than be swallowed as a successful
+  /// no-op. `tabToIndentTask` re-checks the equivalent task rule itself for the
+  /// same reason; for list items the check lives here so that every Tab
+  /// route — the hardware handler, the IME's `\t` delta, and the macOS
+  /// `insertTab:` selector — asks one question and gets one answer.
   bool indentListItem() {
     if (composer.selection == null) {
       return false;
@@ -2145,6 +2156,10 @@ class CommonEditorOperations {
     final baseNode = document.getNodeById(composer.selection!.base.nodeId);
     final extentNode = document.getNodeById(composer.selection!.extent.nodeId);
     if (baseNode is! ListItemNode || extentNode is! ListItemNode) {
+      return false;
+    }
+
+    if (!canIndentListItem(document, extentNode)) {
       return false;
     }
 

@@ -637,6 +637,75 @@ for a `SizedBox` and back, and then moves the caret. On the pre-fix code it fail
 the production message ("A BlinkController was used after being disposed."); it passes after.
 Fork suite: 5658 passing, 7 skipped.
 
+### List item indent: a bullet may only nest under a bullet (MemNote NOTE-131)
+
+`super_editor/lib/src/default_editor/list_items.dart`,
+`super_editor/lib/src/default_editor/common_editor_operations.dart`
+
+`IndentTaskCommand` refuses to indent a task unless there's a `TaskNode` immediately above
+it, and then only to one level deeper than that task. `IndentListItemCommand` had no such
+rule: it indented whatever node it was handed, capped only at 6. So the same gesture gave
+two answers — select a flat checklist from the top and press Tab and you get `0, 1, 1`;
+do it to a flat run of bullets and you get `1, 1, 1`. This makes bullets follow the task
+rule, via a new `canIndentListItem(Document, ListItemNode)` predicate that both the command
+and `CommonEditorOperations.indentListItem()` consult.
+
+- **The rule isn't a preference, it's the set of states a list can be stored in.** A list
+  item's indent is structural: markdown derives it from real list *nesting*
+  (`markdown_to_document_parsing.dart`, `_listItemTypeStack.length - 1`), not from leading
+  spaces. Round-tripped through this package's own codec on 2026-09-05: two bullets at
+  indent 1 with nothing above them serialize to `  - one` / `  - two` and come back at
+  indent **0**; at indent 3 they serialize to six-space lines and come back as **one
+  paragraph** holding the literal text, because CommonMark reads 4+ leading spaces with no
+  open list as an indented code block; and `- one` at 0 followed by `- two` at 3 — three
+  Tabs on the second bullet, entirely reachable before this patch — comes back as **one
+  list item** whose text is `one\n    - two`, the second bullet swallowed as a continuation
+  line. A run where each item is at most one level deeper than the one above it round-trips
+  unchanged. The permissive behavior was offering an indent no list representation can hold.
+
+- **The refusal is reported, not just made.** `tabToIndentListItem` turns
+  `CommonEditorOperations.indentListItem()`'s bool into halt-vs-continue, and that bool was
+  `true` merely because the extent sat in a `ListItemNode` — so a Tab that indented nothing
+  still halted, and the keypress was consumed by a no-op. The re-check lives in
+  `indentListItem()` rather than in `tabToIndentListItem` (where the task path puts its
+  equivalent) because three separate Tab routes funnel through that one method — the
+  hardware handler, the IME's `\t` delta branch in `document_delta_editing.dart`, and the
+  macOS `insertTab:` selector in `supereditor_ime_interactor.dart` — and putting it in the
+  key handler would have left the two IME routes disagreeing with it. A blocked Tab now
+  falls through exactly as a blocked task Tab does, which on desktop means nothing happens
+  (`\t` is a control character, so `anyCharacterToInsertInTextContent` declines it) and on
+  web means a space, same as tasks.
+
+- **`IndentListItemCommand` also stopped force-casting.** It opened with
+  `node as ListItemNode`, which throws for any other node type; it now returns early, the
+  way `IndentTaskCommand` does. Same class of caller mistake, same non-answer.
+
+- **Deliberately left alone: un-indent.** A bullet at indent 0 leaves the list and becomes a
+  paragraph, while a task at indent 0 no-ops, and `UnIndentTaskCommand` cascades into
+  sub-tasks while `UnIndentListItemCommand` touches only the node it names. A second
+  asymmetry, separately arguable, and it costs no round-trip fidelity — an over-indented
+  item can always un-indent back out. Also left alone: **normalization**. The rule guards
+  the indent action; it does not repair a document that already holds an orphaned or
+  level-skipping indent (deleting the item above one leaves it orphaned, and pasted markdown
+  can produce one). Those still un-indent normally.
+
+- **Upstreamability is a judgement call.** "Make bullets match tasks" is the plausible
+  upstream pitch — it's upstream's own rule, upstream's own two commands disagreeing, and
+  it changes nothing for a list built one level at a time. The round-trip argument above is
+  MemNote's, because MemNote stores notes as markdown; upstream may not weigh that the same
+  way, and an app that keeps its documents in a nesting-free format loses an indent it used
+  to be able to type. Not submitted.
+
+Tests: `super_editor/test/super_editor/components/list_items_test.dart`, new group
+"List items > indent rule >", five tests — indents one level under the item above; doesn't
+indent an item with nothing above it; doesn't indent an item below a non-list node; doesn't
+skip a level; stops at the maximum indent level. Three of the five fail on the pre-patch
+code (verified by reverting the two `lib/` files and re-running: 2 passing / 3 failing
+before, 5 passing after). Two existing fixtures indented the *first* node of their document
+and had to move to the second: "updates caret position when indenting" in both the unordered
+and ordered groups of that file, and "software keyboard > tab indents list item" in
+`supereditor_keyboard_test.dart`. Fork suite: 5663 passing, 7 skipped.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:
