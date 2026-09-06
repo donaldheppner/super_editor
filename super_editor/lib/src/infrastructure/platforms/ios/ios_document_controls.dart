@@ -271,10 +271,28 @@ class IosDocumentGestureEditingController extends GestureEditingController {
 }
 
 class FloatingCursorController {
+  /// Releases every notifier this controller owns, and drops its [FloatingCursorListener]s.
+  ///
+  /// All four notifiers are safe to release together, because they are written and read
+  /// through the same two mechanisms. `EditorFloatingCursor` is the only writer - it sets
+  /// all four from `_updateFloatingCursorGeometryForCurrentFloatingCursorFocalPoint` and
+  /// `_onFloatingCursorStop`, always through the controls controller it re-resolved in its
+  /// most recent `didChangeDependencies`, so a client that swaps controllers writes to the
+  /// incoming controller, never to the outgoing one. And the only subscribers are
+  /// build-phase subscribers that keep a matching `removeListener`: the
+  /// `ValueListenableBuilder` on [cursorGeometryInDocument] inside `EditorFloatingCursor`,
+  /// and `IosControlsDocumentLayerState`'s `initState`/`didUpdateWidget`/`dispose` trio on
+  /// [isActive]. `ChangeNotifier.removeListener` is explicitly allowed after dispose.
+  ///
+  /// Nothing here has the deferred-notification shape that keeps the controls controller's
+  /// `LeaderLink`s undisposed (see `SuperEditorIosControlsController.dispose`): a
+  /// `ValueNotifier` notifies inline, so a write either lands before `dispose()` or is a
+  /// write from a stale client that would be a bug on its own.
   void dispose() {
     isActive.dispose();
     isNearText.dispose();
     cursorGeometryInViewport.dispose();
+    cursorGeometryInDocument.dispose();
     _listeners.clear();
   }
 
