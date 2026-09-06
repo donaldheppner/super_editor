@@ -10,6 +10,33 @@ import 'document.dart';
 /// A stylesheet is a series of priority-order rules that generate style
 /// metadata, which is then applied to the layout and the blocks within the
 /// layout.
+///
+/// ## This class deliberately has no `operator ==` (MemNote NOTE-162)
+///
+/// Its neighbours [CascadingPadding] and [SelectionStyles] both define one, so its absence
+/// looks like an oversight. It isn't, and adding one is not the free optimisation it appears
+/// to be. Two things to know before you try:
+///
+///  1. A value-based `==` would almost never return `true` in practice. Every field except
+///     [documentPadding] is either a function ([inlineTextStyler], [selectedTextColorStrategy]),
+///     a list of functions ([inlineWidgetBuilders]), or a list of [StyleRule]s whose [Styler] is
+///     a function. Callers overwhelmingly build their stylesheet inside `build()` - the usual
+///     shape is `defaultStylesheet.copyWith(rules: [...])` with closures written inline - and
+///     each of those closures is a fresh object on every call. So the comparison would cost
+///     something and change nothing for the code that would most like it to help. Making it
+///     help requires the *caller* to hold one [Stylesheet] instance across builds.
+///
+///  2. `SuperEditor.didUpdateWidget` uses `widget.stylesheet != oldWidget.stylesheet` to decide
+///     whether to rebuild its whole layout presenter, and the presenter is where a plugin's
+///     `appendedStylePhases` and `componentBuilders` are read. Because this class has no `==`,
+///     that check is really an identity check, so a caller that rebuilds its stylesheet on
+///     every build gets a fresh presenter on every build - which is wasteful, but which also
+///     happens to be what keeps a *replaced* plugin's style phases live. `didUpdateWidget` now
+///     rebuilds the presenter on a plugin-set change in its own right, so that no longer rides
+///     on this class. If you give [Stylesheet] an `==`, check that any other presenter input
+///     that is rebuilt per-build and never compared - `SuperEditor.componentBuilders` in
+///     particular - has an equally deliberate answer before you rely on the presenter
+///     surviving a rebuild.
 class Stylesheet {
   const Stylesheet({
     this.documentPadding,

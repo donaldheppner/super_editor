@@ -1247,6 +1247,69 @@ directly — which is exactly what `DocumentImeInputClient.updateFloatingCursor`
 only way to raise the gesture once the editor (and its IME client) is gone. Fork suite: 5692
 passing, 7 skipped (5691 before this one test).
 
+### Plugin swap must rebuild the layout presenter, not ride on `Stylesheet` having no `==` (MemNote NOTE-162)
+
+`super_editor/lib/src/default_editor/super_editor.dart`, `super_editor/lib/src/core/styles.dart`
+
+`SuperEditorState.didUpdateWidget` diffs `widget.plugins` and attaches/detaches the difference,
+but it did not rebuild the layout presenter when that diff was non-empty. A plugin's
+`appendedStylePhases` (and the `componentBuilders` it folds into `SuperEditor.componentBuilders`)
+are copied into the presenter's pipeline in `_createLayoutPresenter`, and nothing else re-reads
+them — so a replaced plugin's style phase silently never ran again. The detached plugin's phase
+stayed in the pipeline, still styling the document from state its now-detached reaction had
+stopped updating. `didUpdateWidget` now rebuilds the presenter when the plugin set changes, in
+addition to when the stylesheet changes.
+
+- **It only worked before by accident, and the accident is the reason this is filed.** The
+  `else` branch's one presenter rebuild is `widget.stylesheet != oldWidget.stylesheet`.
+  `Stylesheet` has no `operator ==` — unlike its file neighbours `CascadingPadding` and
+  `SelectionStyles`, which both define one — so that is an identity check, and any client that
+  builds its stylesheet inside `build()` gets `true` every time and a fresh presenter with it.
+  MemNote is exactly that client (`super_note_editor_panel.dart` calls
+  `createEditorStylesheet(...)` from `build`), which is why its colour-theme plugin swap has
+  always worked. Adding an `==` to `Stylesheet` — the obvious cleanup, and one an upstream
+  contributor could make without ever seeing MemNote — would have broken it with nothing to
+  catch it.
+
+- **`Stylesheet` still has no `==`, deliberately, and now says so.** Two reasons, both recorded
+  in its doc comment. First, a value-based `==` would essentially never return `true`: every
+  field but `documentPadding` is a closure, a list of closures, or a list of `StyleRule`s whose
+  `Styler` is a closure, and `StyleRule`/`BlockSelector` have no `==` either. Measured against
+  MemNote's own stylesheet: two `createEditorStylesheet` calls with *identical* inputs produce
+  `inlineTextStyler` unequal, `rules` not identical, `rules[0]` not identical and
+  `rules[0].styler` unequal — only `selector` and `documentPadding` match. So the `==` costs
+  something and changes nothing for the callers that would most like it to help; making it help
+  needs the *caller* to hold one instance across builds. Second, `componentBuilders` is a second
+  presenter input that is rebuilt per build and never compared, so an `==` on `Stylesheet` alone
+  would freeze stale component builders into the presenter. The doc comment names both, plus the
+  plugin dependency that this change has now removed.
+
+- **Both ends are written down.** Fork end: the `Stylesheet` doc comment and the comment on the
+  `didPluginsChange ||` condition. App end: the plugin construction in
+  `super_note_editor_panel.dart`'s `didChangeDependencies`, which also corrects NOTE-149's claim
+  that `appendedStylePhases` is "read out of `widget.plugins` at build time" — it is not, and
+  that mistake is precisely the trap.
+
+- **Genuine upstream candidate.** It is upstream's own plugin diff, one refresh short, with
+  upstream's own `build()`-time re-reads of every *other* plugin contribution standing as the
+  evidence of intent. The only behaviour change is an extra presenter rebuild in a case where
+  the presenter was stale. Not submitted — that is Don's call.
+
+- **Not attempted: the per-build presenter rebuild itself.** That is the performance half of the
+  ticket and it is not fixed here; see the MemNote-side finding. Measured while in here: it is
+  per *panel build*, not per frame — typing does not rebuild the panel (verified: the
+  `SuperEditor` widget instance and its `Stylesheet` are identical after five inserts), so it
+  costs on discrete events (theme/layout/font changes, mode toggle, paste, image and table
+  insert, window metrics) rather than in a hot loop.
+
+Tests: `super_editor/test/super_editor/supereditor_plugin_test.dart`, group
+"appended style phases >", one test — "are re-read when the plugin set changes but the stylesheet
+does not". It hands both pumps the *same* `defaultStylesheet` instance, so the stylesheet term
+cannot satisfy it and only the plugin diff can; the plugin contributes a counting
+`SingleColumnLayoutStylePhase` and the test asserts the replacement's phase ran and the removed
+one's did not run again. Sensitivity: verified failing on all five platform variants before the
+fix, passing after. Fork suite: 5697 passing, 7 skipped (5692 before these five variants).
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

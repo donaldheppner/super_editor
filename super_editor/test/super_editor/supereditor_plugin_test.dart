@@ -25,6 +25,54 @@ void main() {
       expect(plugin.detachCallCount, 1);
     });
 
+    group('appended style phases >', () {
+      testWidgetsOnAllPlatforms('are re-read when the plugin set changes but the stylesheet does not', (tester) async {
+        final editor = createDefaultDocumentEditor(
+          document: MutableDocument(
+            nodes: [
+              ParagraphNode(id: "1", text: AttributedText()),
+            ],
+          ),
+          composer: MutableDocumentComposer(),
+        );
+
+        final plugin1 = _StylePhasePlugin();
+        final plugin2 = _StylePhasePlugin();
+
+        // Both pumps hand `SuperEditor` the SAME `Stylesheet` instance, so the stylesheet
+        // identity check in `didUpdateWidget` can't be what rebuilds the layout presenter.
+        // A plugin's `appendedStylePhases` are baked into the presenter's pipeline when the
+        // presenter is created, so swapping the plugin has to rebuild the presenter on its
+        // own account (MemNote NOTE-162).
+        Widget buildEditorWith(SuperEditorPlugin plugin) => MaterialApp(
+              home: Scaffold(
+                body: SuperEditor(
+                  editor: editor,
+                  stylesheet: defaultStylesheet,
+                  plugins: {plugin},
+                ),
+              ),
+            );
+
+        await tester.pumpWidget(buildEditorWith(plugin1));
+
+        // The first plugin's phase is in the pipeline, so it ran.
+        expect(plugin1.phase.styleCallCount, greaterThan(0));
+        expect(plugin2.phase.styleCallCount, 0);
+        final plugin1CallCountBeforeSwap = plugin1.phase.styleCallCount;
+
+        // Replace the plugin instance without touching anything else. This is the same
+        // `SuperEditor` element, so it takes the `didUpdateWidget` path.
+        await tester.pumpWidget(buildEditorWith(plugin2));
+        await tester.pump();
+
+        // The replacement plugin's phase reached the pipeline...
+        expect(plugin2.phase.styleCallCount, greaterThan(0));
+        // ...and the removed plugin's phase is no longer in it.
+        expect(plugin1.phase.styleCallCount, plugin1CallCountBeforeSwap);
+      });
+    });
+
     group('rebuild >', () {
       testWidgetsOnAllPlatforms('different SuperEditor, same Editor, same plugin instance', (tester) async {
         final pump1Key = GlobalKey(debugLabel: 'pump-1');
@@ -309,4 +357,23 @@ class _FakePlugin extends SuperEditorPlugin {
 
 class _FakePluginResource extends Editable {
   static const key = "fake-resource";
+}
+
+/// A plugin that contributes a style phase to `SuperEditor`'s layout presenter pipeline,
+/// and counts how many times that phase actually runs.
+class _StylePhasePlugin extends SuperEditorPlugin {
+  final phase = _CountingStylePhase();
+
+  @override
+  List<SingleColumnLayoutStylePhase> get appendedStylePhases => [phase];
+}
+
+class _CountingStylePhase extends SingleColumnLayoutStylePhase {
+  int styleCallCount = 0;
+
+  @override
+  SingleColumnLayoutViewModel style(Document document, SingleColumnLayoutViewModel viewModel) {
+    styleCallCount += 1;
+    return viewModel;
+  }
 }

@@ -539,21 +539,33 @@ class SuperEditorState extends State<SuperEditor> {
     } else {
       // The editor didn't change, but the plugin set may have. Detach any
       // plugins that were removed, and attach any plugins that were added.
+      var didPluginsChange = false;
       for (final oldPlugin in oldWidget.plugins) {
         if (!widget.plugins.contains(oldPlugin)) {
           oldPlugin._detachFromSuperEditor(widget.editor);
+          didPluginsChange = true;
         }
       }
       for (final newPlugin in widget.plugins) {
         if (!oldWidget.plugins.contains(newPlugin)) {
           newPlugin._attachToSuperEditor(widget.editor);
+          didPluginsChange = true;
         }
       }
 
       if (widget.selectionStyles != oldWidget.selectionStyles) {
         _docLayoutSelectionStyler.selectionStyles = widget.selectionStyles;
       }
-      if (widget.stylesheet != oldWidget.stylesheet) {
+      if (didPluginsChange || widget.stylesheet != oldWidget.stylesheet) {
+        // Most of what a plugin contributes - overlay and underlay builders, keyboard actions,
+        // content tap handlers - is read straight out of `widget.plugins` in `build()`, so a
+        // replaced plugin instance takes effect on its own. Its `appendedStylePhases` and its
+        // `componentBuilders` are the exception: those are copied into the layout presenter's
+        // pipeline when the presenter is built, and nothing else rebuilds it. Without the
+        // `didPluginsChange` term, a swapped-in plugin's style phase would silently never run;
+        // the detached plugin's phase would stay in the pipeline, still holding whatever state
+        // the plugin left behind when it was detached. See `Stylesheet` in `core/styles.dart`
+        // for why the stylesheet term alone used to cover this by accident (MemNote NOTE-162).
         _createLayoutPresenter();
       }
     }
