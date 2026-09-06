@@ -22,12 +22,17 @@ through `main`.
 
 Two more things a fresh clone needs:
 
-- **Long paths, twice.** Clone or `submodule update` with
-  `-c core.longpaths=true`, *and* `git config core.longpaths true` inside the
-  resulting checkout. Without the first, checkout dies on
-  `super_clones/ios_messenger/…` ("Filename too long") and silently leaves a
-  submodule on the wrong commit; without the second, `git status` reports ~121
-  phantom deletions.
+- **Long paths.** Set `git config --global core.longpaths true` once per
+  machine — MemNote's `init.ps1` refuses to run without it (MemNote NOTE-157),
+  and it covers both the clone and the resulting checkout. Without it, checkout
+  dies on `super_clones/ios_messenger/…` ("Filename too long") and silently
+  leaves a submodule on the wrong commit, and `git status` then reports ~121
+  phantom deletions. If you cannot set it globally, the per-command equivalent
+  is `-c core.longpaths=true` on the clone or `submodule update` *and*
+  `git config core.longpaths true` inside the resulting checkout — but that
+  habit does not generalise: pub gives you nowhere to pass the flag when it
+  clones deep git dependencies, which is why the global setting is the one
+  `init.ps1` checks.
 - **Sibling packages must resolve from this repo.** `super_editor_clipboard`'s
   published pubspec takes `super_editor` from pub.dev, and `0.3.0-dev.52` no
   longer compiles against current Flutter (`TextInputConnection.updateStyle`), so
