@@ -845,7 +845,204 @@ void main() {
       });
     });
 
+    group("selection handles allowed >", () {
+      // preventSelectionHandles()/allowSelectionHandles() have to reach two widgets on
+      // Android, because Android splits a handle in half: AndroidHandlesDocumentLayer builds
+      // the caret and the expanded handles' Leaders, and
+      // SuperEditorAndroidControlsOverlayManager builds the handle widgets that follow those
+      // Leaders. Until MemNote NOTE-171 only the layer consulted the notifier, and the
+      // handles vanished as a side effect of their Leaders going away - which the default
+      // handles survive (a Follower with showWhenUnlinked: false stops painting and
+      // hit-testing) but a client-supplied expandedHandlesBuilder does not.
+
+      testWidgetsOnAndroid("hides the expanded handles with no other trigger", (tester) async {
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.doubleTapInParagraph("1", 0);
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsExactly(2));
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+      });
+
+      testWidgetsOnAndroid("brings the expanded handles back with no other trigger", (tester) async {
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.doubleTapInParagraph("1", 0);
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+
+        // The reverse direction matters just as much: the Android spell-checker's
+        // _hideSpellCheckerPopover() calls allowSelectionHandles() and then only re-styles
+        // the selection and hides a popover, so there may be no selection change to ride
+        // along on.
+        controlsController.allowSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsExactly(2));
+      });
+
+      testWidgetsOnAndroid("hides handles built by a client's expandedHandlesBuilder", (tester) async {
+        // This is the case the Leaders don't cover. A client that supplies its own expanded
+        // handles is free to render them however it likes - the builder is handed the focal
+        // points, but nothing obliges it to wrap its handles in a Follower. Before NOTE-171
+        // such a builder was still called with shouldShow: true while
+        // areSelectionHandlesAllowed was false, so its handles stayed on screen and stayed
+        // hit-testable.
+        final controlsController = SuperEditorAndroidControlsController(
+          expandedHandlesBuilder: (
+            context, {
+            required upstreamHandleKey,
+            required upstreamFocalPoint,
+            required upstreamGestureDelegate,
+            required downstreamHandleKey,
+            required downstreamFocalPoint,
+            required downstreamGestureDelegate,
+            required shouldShow,
+          }) {
+            if (!shouldShow) {
+              return const SizedBox();
+            }
+
+            // Deliberately not Followers: handles painted at a fixed spot, which is what
+            // makes this test see the notifier rather than the Leaders.
+            return Stack(
+              children: [
+                Positioned(
+                  left: 10,
+                  top: 10,
+                  child: SizedBox(
+                    key: upstreamHandleKey,
+                    width: 20,
+                    height: 20,
+                    child: const ColoredBox(color: Color(0xFFFF0000)),
+                  ),
+                ),
+                Positioned(
+                  left: 40,
+                  top: 10,
+                  child: SizedBox(
+                    key: downstreamHandleKey,
+                    width: 20,
+                    height: 20,
+                    child: const ColoredBox(color: Color(0xFF00FF00)),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.doubleTapInParagraph("1", 0);
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsExactly(2));
+        expect(SuperEditorInspector.findMobileExpandedDragHandles().hitTestable(), findsExactly(2));
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+      });
+
+      testWidgetsOnAndroid("doesn't need an extra frame when the caller also changes the selection", (tester) async {
+        // The Android spell-checker's tap handler calls preventSelectionHandles() and then
+        // immediately expands the selection to the misspelled word, so that path already
+        // rebuilt this overlay in the same frame. Adding a subscriber must not cost it a
+        // second frame - and it can't, because a ValueListenableBuilder's rebuild is
+        // Element.markNeedsBuild, which returns early when the element is already dirty.
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        final editor = await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.doubleTapInParagraph("1", 0);
+        await tester.pumpAndSettle();
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsExactly(2));
+
+        controlsController.preventSelectionHandles();
+        editor.execute([
+          const ChangeSelectionRequest(
+            DocumentSelection(
+              base: DocumentPosition(nodeId: "1", nodePosition: TextNodePosition(offset: 2)),
+              extent: DocumentPosition(nodeId: "1", nodePosition: TextNodePosition(offset: 8)),
+            ),
+            SelectionChangeType.expandSelection,
+            SelectionReason.userInteraction,
+          ),
+        ]);
+
+        // One frame settles both.
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+        expect(SuperEditorInspector.findMobileCaret(), findsNothing);
+
+        // That frame does leave one more scheduled, but it's a repaint after the fact rather
+        // than a second build the effect was waiting on - the assertions above already hold.
+        // Measured with debugPrintScheduleFrameStacks: it comes from
+        // RenderFollower.detach() -> markNeedsPaint, i.e. follow_the_leader reacting to a
+        // handle leaving the tree, and the allow direction has always scheduled the same
+        // follow-up frame when a handle comes back. One more pump and the editor is quiet,
+        // which is what rules out a rebuild loop.
+        await tester.pump();
+        expect(tester.binding.hasScheduledFrame, isFalse);
+      });
+    });
+
     group("layer lifecycle >", () {
+      testWidgetsOnAndroid("keeps honoring preventSelectionHandles after the controls controller is replaced",
+          (tester) async {
+        // NOTE-171's subscriber and NOTE-142's disposal of the very same notifier meet here,
+        // exactly as they do on iOS after NOTE-148. The overlay now holds a
+        // ValueListenableBuilder listener on the outgoing controller's
+        // areSelectionHandlesAllowed at the moment the app disposes it, so this asserts that
+        // the swap moves the subscription to the replacement rather than stranding it on the
+        // dead controller.
+        final handleColor = ValueNotifier<Color>(Colors.red);
+        addTearDown(handleColor.dispose);
+
+        SuperEditorAndroidControlsController? currentController;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: _ThemedAppOwnedControlsScope(
+                handleColor: handleColor,
+                onControllerCreated: (controller) => currentController = controller,
+              ),
+            ),
+          ),
+        );
+
+        await tester.doubleTapInParagraph("1", 0);
+        await tester.pumpAndSettle();
+
+        // Prevent handles on the first controller, so the overlay's listener is registered on
+        // the notifier that's about to be disposed, and the handles are in the hidden state.
+        currentController!.preventSelectionHandles();
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+
+        // Swap the controller. The replacement allows handles.
+        handleColor.value = Colors.blue;
+        await tester.pumpAndSettle();
+
+        // And the replacement's notifier is the live one now.
+        currentController!.preventSelectionHandles();
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+
+        expect(tester.takeException(), isNull);
+      });
+
       testWidgetsOnAndroid("doesn't jump a disposed caret to opaque after the editor is replaced", (tester) async {
         // An app is free to own the Android controls scope itself and hang it above
         // SuperEditor, in which case the controller outlives whatever editor sits beneath it.
@@ -975,9 +1172,14 @@ void main() {
 class _ThemedAppOwnedControlsScope extends StatefulWidget {
   const _ThemedAppOwnedControlsScope({
     required this.handleColor,
+    this.onControllerCreated,
   });
 
   final ValueListenable<Color> handleColor;
+
+  /// Reports each controller this scope builds, so a test can assert against whichever
+  /// one is current.
+  final void Function(SuperEditorAndroidControlsController)? onControllerCreated;
 
   @override
   State<_ThemedAppOwnedControlsScope> createState() => _ThemedAppOwnedControlsScopeState();
@@ -1015,6 +1217,7 @@ class _ThemedAppOwnedControlsScopeState extends State<_ThemedAppOwnedControlsSco
   void _rebuildControlsController() {
     _controlsController?.dispose();
     _controlsController = SuperEditorAndroidControlsController(controlsColor: widget.handleColor.value);
+    widget.onControllerCreated?.call(_controlsController!);
   }
 
   @override
@@ -1080,6 +1283,32 @@ class _AppOwnedControlsScopeState extends State<_AppOwnedControlsScope> {
       ),
     );
   }
+}
+
+/// Pumps a [SuperEditor] beneath an app-owned [SuperEditorAndroidControlsScope], so a test can
+/// drive the very controller the editor's layers and overlay resolve.
+///
+/// [SuperEditorAndroidControlsScope.rootOf] takes the root-most scope, so hanging the scope
+/// above `SuperEditor` is what makes [controlsController] the one that matters.
+Future<Editor> _pumpAppOwnedControls(
+  WidgetTester tester,
+  SuperEditorAndroidControlsController controlsController,
+) async {
+  final composer = MutableDocumentComposer();
+  final editor = createDefaultDocumentEditor(document: singleParagraphDoc(), composer: composer);
+
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: SuperEditorAndroidControlsScope(
+          controller: controlsController,
+          child: SuperEditor(editor: editor),
+        ),
+      ),
+    ),
+  );
+
+  return editor;
 }
 
 Future<TestDocumentContext> _pumpSingleParagraphApp(

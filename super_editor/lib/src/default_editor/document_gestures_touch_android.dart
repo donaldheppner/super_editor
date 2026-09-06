@@ -324,6 +324,13 @@ class SuperEditorAndroidControlsController {
   ///
   /// Defaults to `true`.
   /// {@endtemplate}
+  ///
+  /// Two widgets read this, because Android splits a handle between them: the caret and the
+  /// expanded handles' `Leader`s live in `AndroidHandlesDocumentLayer`, and the handle widgets
+  /// themselves live in [SuperEditorAndroidControlsOverlayManagerState]. Both consult this
+  /// notifier, so `false` means no caret and no handle - see
+  /// `SuperEditorAndroidControlsOverlayManagerState._buildExpandedHandle` for why the overlay
+  /// can't simply rely on the layer dropping its `Leader`s (MemNote NOTE-171).
   ValueListenable<bool> get areSelectionHandlesAllowed => _areSelectionHandlesAllowed;
   final _areSelectionHandlesAllowed = ValueNotifier<bool>(true);
 
@@ -1969,31 +1976,63 @@ class SuperEditorAndroidControlsOverlayManagerState extends State<SuperEditorAnd
     );
   }
 
+  /// Builds an expanded selection handle with [builder], rebuilding it whenever the answer to
+  /// "should an expanded handle be visible right now?" changes.
+  ///
+  /// Two of the controller's notifiers answer that question and both have to be consulted:
+  /// [SuperEditorAndroidControlsController.shouldShowExpandedHandles], which says whether an
+  /// expanded selection wants handles at all, and
+  /// [SuperEditorAndroidControlsController.areSelectionHandlesAllowed], which is how a client
+  /// suppresses every handle for something else - `super_editor_spellcheck` calls
+  /// `preventSelectionHandles()` before expanding the selection to the misspelled word, so its
+  /// suggestion popover isn't competing with drag handles.
+  ///
+  /// This method reads the second one as of MemNote NOTE-171. Before that, this overlay
+  /// consulted only [SuperEditorAndroidControlsController.shouldShowExpandedHandles], and the
+  /// handles disappeared under `preventSelectionHandles()` only as a side effect: the caret
+  /// layer stops building its `Leader`s, so the `Follower`s here go unlinked and
+  /// `showWhenUnlinked: false` stops painting and hit-testing them. That covers the default
+  /// handles, but it does not cover an [expandedHandlesBuilder] supplied by a client, which
+  /// was still called with `shouldShow: true` and is free to render handles that don't follow
+  /// a `Leader` at all. It also left iOS and Android disagreeing about the same notifier: the
+  /// iOS layer builds its handles itself, so it drops them from the tree (MemNote NOTE-148),
+  /// where Android kept two invisible ones. Now both platforms take "prevent selection
+  /// handles" to mean the handles are gone.
+  Widget _buildExpandedHandle(Widget Function(BuildContext context, bool shouldShow) builder) {
+    return ValueListenableBuilder(
+      valueListenable: _controlsController!.areSelectionHandlesAllowed,
+      builder: (context, areSelectionHandlesAllowed, child) {
+        return ValueListenableBuilder(
+          valueListenable: _controlsController!.shouldShowExpandedHandles,
+          builder: (context, shouldShowExpandedHandles, child) {
+            return builder(context, areSelectionHandlesAllowed && shouldShowExpandedHandles);
+          },
+        );
+      },
+    );
+  }
+
   List<Widget> _buildExpandedHandles() {
     if (_controlsController!.expandedHandlesBuilder != null) {
       return [
-        ValueListenableBuilder(
-          valueListenable: _controlsController!.shouldShowExpandedHandles,
-          builder: (context, shouldShow, child) {
-            return _controlsController!.expandedHandlesBuilder!(
-              context,
-              upstreamHandleKey: DocumentKeys.upstreamHandle,
-              upstreamFocalPoint: _controlsController!.upstreamHandleFocalPoint,
-              upstreamGestureDelegate: _upstreamHandleGesturesDelegate,
-              downstreamHandleKey: DocumentKeys.downstreamHandle,
-              downstreamFocalPoint: _controlsController!.downstreamHandleFocalPoint,
-              downstreamGestureDelegate: _downstreamHandleGesturesDelegate,
-              shouldShow: shouldShow,
-            );
-          },
-        )
+        _buildExpandedHandle((context, shouldShow) {
+          return _controlsController!.expandedHandlesBuilder!(
+            context,
+            upstreamHandleKey: DocumentKeys.upstreamHandle,
+            upstreamFocalPoint: _controlsController!.upstreamHandleFocalPoint,
+            upstreamGestureDelegate: _upstreamHandleGesturesDelegate,
+            downstreamHandleKey: DocumentKeys.downstreamHandle,
+            downstreamFocalPoint: _controlsController!.downstreamHandleFocalPoint,
+            downstreamGestureDelegate: _downstreamHandleGesturesDelegate,
+            shouldShow: shouldShow,
+          );
+        })
       ];
     }
 
     return [
-      ValueListenableBuilder(
-        valueListenable: _controlsController!.shouldShowExpandedHandles,
-        builder: (context, shouldShow, child) {
+      _buildExpandedHandle(
+        (context, shouldShow) {
           if (!shouldShow) {
             return const SizedBox();
           }
@@ -2034,9 +2073,8 @@ class SuperEditorAndroidControlsOverlayManagerState extends State<SuperEditorAnd
           );
         },
       ),
-      ValueListenableBuilder(
-        valueListenable: _controlsController!.shouldShowExpandedHandles,
-        builder: (context, shouldShow, child) {
+      _buildExpandedHandle(
+        (context, shouldShow) {
           if (!shouldShow) {
             return const SizedBox();
           }
