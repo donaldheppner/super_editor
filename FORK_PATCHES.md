@@ -919,6 +919,61 @@ top-level packages (`attributed_text`, `super_text_layout`, `super_keyboard`, `s
 `super_editor_spellcheck`, `super_editor_clipboard`, `flutter_test_registry`), then
 `git status --short` inside the submodule — empty. No test changes; this touches no Dart code.
 
+### `FloatingCursorController.dispose()`: release the fourth notifier too (MemNote NOTE-147)
+
+`super_editor/lib/src/infrastructure/platforms/ios/ios_document_controls.dart`
+
+The third of the same defect class, after NOTE-141 and NOTE-142.
+`FloatingCursorController.dispose()` released `isActive`, `isNearText` and
+`cursorGeometryInViewport` and skipped `cursorGeometryInDocument`, with nothing saying why.
+It is now released, and `dispose()` carries the reasoning so the asymmetry can't come back.
+
+(The ticket cites `document_gestures_touch_ios.dart:274`. The line number is right, the file
+is not — `FloatingCursorController` lives in `ios_document_controls.dart`. Nothing in
+`document_gestures_touch_ios.dart` changed for this ticket.)
+
+- **Answered the way NOTE-142 asked for — by running it, not by reading it.** The disposal was
+  implemented first and then driven through a controller swap with the floating cursor
+  mid-gesture, which is the only thing that writes these four notifiers. It does not throw.
+
+- **The specific hazard NOTE-142 found — a notification re-posted past the end of the frame,
+  landing after `dispose()` — has no analogue here.** That one is `LeaderLink`'s: while the
+  scheduler is in `SchedulerPhase.persistentCallbacks`, `LeaderLink.notifyListeners` re-posts
+  itself through `addPostFrameCallback`. `cursorGeometryInDocument` is a plain `ValueNotifier`,
+  which notifies inline, so a write either happens before `dispose()` or is a stale client's
+  bug on its own terms.
+
+- **`cursorGeometryInDocument` is written from exactly the two places that write the already
+  disposed `cursorGeometryInViewport`** — `_EditorFloatingCursorState`'s
+  `_updateFloatingCursorGeometryForCurrentFloatingCursorFocalPoint` and
+  `_onFloatingCursorStop` — and both reach it through `_controlsContext`, which
+  `didChangeDependencies` re-resolves from `SuperEditorIosControlsScope.rootOf` on every
+  controller swap. So the writes that follow a swap land on the incoming controller. The one
+  subscriber is a `ValueListenableBuilder` in `EditorFloatingCursor.build`, whose
+  `didUpdateWidget` does remove-old/add-new in the same build, and
+  `ChangeNotifier.removeListener` is explicitly allowed after dispose. That is the same
+  build-phase-subscriber shape that already carries the other three.
+
+- **The test was checked for sensitivity before it was trusted.** With the disposal in place,
+  `_updateFloatingCursorGeometryForCurrentFloatingCursorFocalPoint` was temporarily changed to
+  cache `cursorGeometryInDocument` on first use — a deliberately stale writer. The swap test
+  then reports *"A ValueNotifier<Rect?> was used after being disposed."* through
+  `tester.takeException()`, and the post-swap geometry assertion goes null. Backing the
+  disposal out (leaving the probe alone) makes the controller-lifecycle test fail on the new
+  `addListener` expectation. Both directions of the conclusion are load-bearing.
+
+- **Genuine upstream candidate**, same as NOTE-141/142: upstream's own teardown, one member
+  short, finished on upstream's own terms and with no behaviour change for any client that
+  respects the controller's stated lifetime contract. Not submitted.
+
+Tests: `super_editor/test/super_editor/mobile/super_editor_ios_overlay_controls_test.dart`.
+Group "layer lifecycle >" gains "keeps driving the floating cursor after the controls
+controller is replaced" — MemNote's app-owned-scope arrangement again, but with
+`startFloatingCursorGesture`/`updateFloatingCursorGesture` straddling the swap, asserting the
+replacement's geometry is written after the swap and cleared on release. The
+"controller lifecycle >" test now names all four floating cursor notifiers instead of just
+`isActive`. Fork suite: 5669 passing, 7 skipped (5668 before the one new test).
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

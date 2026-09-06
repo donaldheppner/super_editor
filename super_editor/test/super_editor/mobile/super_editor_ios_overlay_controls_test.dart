@@ -541,6 +541,62 @@ void main() {
 
         expect(tester.takeException(), isNull);
       });
+
+      testWidgetsOnIos("keeps driving the floating cursor after the controls controller is replaced",
+          (tester) async {
+        // Same app-owned swap as above, but with the floating cursor mid-gesture, because
+        // that's the only thing that writes to FloatingCursorController's notifiers - and
+        // all four of them are released by FloatingCursorController.dispose().
+        //
+        // EditorFloatingCursor re-resolves the controls scope in didChangeDependencies, so
+        // the writes that follow the swap have to land on the *incoming* controller. If any
+        // of them kept a reference to the outgoing one, this test reports
+        // "A ValueNotifier<Rect?> was used after being disposed." (verified by deliberately
+        // caching the notifier in _updateFloatingCursorGeometryForCurrentFloatingCursorFocalPoint
+        // and re-running: takeException() catches it, and the geometry below stays null).
+        final handleColor = ValueNotifier<Color>(const Color(0xFFFF0000));
+        addTearDown(handleColor.dispose);
+
+        SuperEditorIosControlsController? currentController;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: _ThemedAppOwnedIosControlsScope(
+                handleColor: handleColor,
+                onControllerCreated: (controller) => currentController = controller,
+              ),
+            ),
+          ),
+        );
+
+        await tester.placeCaretInParagraph("1", 0);
+
+        // Start the floating cursor and move it, so cursorGeometryInDocument holds a rect
+        // and EditorFloatingCursor's ValueListenableBuilder is subscribed to it.
+        await tester.startFloatingCursorGesture();
+        await tester.pump();
+        await tester.updateFloatingCursorGesture(const Offset(50, 0));
+        await tester.pump();
+        expect(currentController!.floatingCursorController.cursorGeometryInDocument.value, isNotNull);
+
+        // Replace the controller mid-gesture. The old one - and its floating cursor
+        // controller - is disposed on the spot, while the editor beneath stays mounted.
+        handleColor.value = const Color(0xFF0000FF);
+        await tester.pump();
+
+        // Keep moving the floating cursor. These writes must reach the replacement.
+        await tester.updateFloatingCursorGesture(const Offset(100, 0));
+        await tester.pump();
+        expect(currentController!.floatingCursorController.cursorGeometryInDocument.value, isNotNull);
+
+        // And releasing it must clear the replacement's geometry, not the dead one's.
+        await tester.stopFloatingCursorGesture();
+        await tester.pump();
+        expect(currentController!.floatingCursorController.cursorGeometryInDocument.value, isNull);
+
+        expect(tester.takeException(), isNull);
+      });
     });
 
     group("controller lifecycle >", () {
@@ -556,7 +612,22 @@ void main() {
         expect(() => controller.handleBeingDragged.addListener(() {}), throwsFlutterError);
         expect(() => controller.shouldShowMagnifier.addListener(() {}), throwsFlutterError);
         expect(() => controller.shouldShowToolbar.addListener(() {}), throwsFlutterError);
+
+        // All four of the floating cursor controller's notifiers, not just the three it
+        // used to release. cursorGeometryInDocument is written by the same method that
+        // writes cursorGeometryInViewport and read by a ValueListenableBuilder inside
+        // EditorFloatingCursor, which drops its listener when the controller is swapped -
+        // see FloatingCursorController.dispose.
         expect(() => controller.floatingCursorController.isActive.addListener(() {}), throwsFlutterError);
+        expect(() => controller.floatingCursorController.isNearText.addListener(() {}), throwsFlutterError);
+        expect(
+          () => controller.floatingCursorController.cursorGeometryInViewport.addListener(() {}),
+          throwsFlutterError,
+        );
+        expect(
+          () => controller.floatingCursorController.cursorGeometryInDocument.addListener(() {}),
+          throwsFlutterError,
+        );
 
         // The LeaderLinks are deliberately NOT released. A RenderLeader writes to its link
         // during layout and paint, and LeaderLink defers those notifications to a
@@ -578,9 +649,14 @@ void main() {
 class _ThemedAppOwnedIosControlsScope extends StatefulWidget {
   const _ThemedAppOwnedIosControlsScope({
     required this.handleColor,
+    this.onControllerCreated,
   });
 
   final ValueListenable<Color> handleColor;
+
+  /// Reports each controller this scope builds, so a test can assert against whichever
+  /// one is current.
+  final void Function(SuperEditorIosControlsController)? onControllerCreated;
 
   @override
   State<_ThemedAppOwnedIosControlsScope> createState() => _ThemedAppOwnedIosControlsScopeState();
@@ -618,6 +694,7 @@ class _ThemedAppOwnedIosControlsScopeState extends State<_ThemedAppOwnedIosContr
   void _rebuildControlsController() {
     _controlsController?.dispose();
     _controlsController = SuperEditorIosControlsController(handleColor: widget.handleColor.value);
+    widget.onControllerCreated?.call(_controlsController!);
   }
 
   @override
