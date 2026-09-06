@@ -1855,6 +1855,16 @@ class _EditorFloatingCursorState extends State<EditorFloatingCursor> {
   void dispose() {
     widget.scrollChangeSignal.removeListener(_onScrollChange);
 
+    // Drop the floating cursor listener, too. `didChangeDependencies` already removes it
+    // before re-subscribing to a replacement controller, so this is the other half of the
+    // same pair - without it, an app that owns the controls scope (and therefore outlives
+    // this widget) keeps a dead listener registered on a live controller, and the next
+    // floating cursor gesture runs `_onFloatingCursorStart` against a torn down tree.
+    //
+    // `removeListener` is a `Set.remove`, so a swap-then-dispose removes nothing here
+    // rather than double-removing, and it's safe after the controller itself is disposed.
+    _controlsContext?.floatingCursorController.removeListener(_floatingCursorListener);
+
     super.dispose();
   }
 

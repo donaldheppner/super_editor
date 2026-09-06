@@ -733,6 +733,56 @@ void main() {
 
         expect(tester.takeException(), isNull);
       });
+
+      testWidgetsOnIos("doesn't drive the floating cursor after the editor is replaced", (tester) async {
+        // EditorFloatingCursor registers a FloatingCursorListener on the app's controls
+        // controller and, before this fix, never removed it in dispose(). With the app
+        // owning the scope, that controller outlives the editor - so swapping SuperEditor
+        // out (MemNote's visual/markdown mode toggle) leaves a dead listener registered on
+        // a live controller.
+        //
+        // The next floating cursor gesture then runs _onFloatingCursorStart against a torn
+        // down tree, where SuperEditor's _docLayoutKey.currentState is null:
+        //
+        //   type 'Null' is not a subtype of type 'DocumentLayout' in type cast
+        final isEditorVisible = ValueNotifier<bool>(true);
+        addTearDown(isEditorVisible.dispose);
+
+        SuperEditorIosControlsController? controlsController;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: _AppOwnedIosControlsScope(
+                isEditorVisible: isEditorVisible,
+                onControllerCreated: (controller) => controlsController = controller,
+              ),
+            ),
+          ),
+        );
+
+        // Place the caret, so the editor has a selection. _onFloatingCursorStart returns
+        // early when the selection is null, and the composer outlives the swap below - so
+        // without this the stale listener would bail out before reaching the document
+        // layout, and the leak would go unobserved.
+        await tester.placeCaretInParagraph("1", 0);
+
+        // Swap SuperEditor out. The EditorFloatingCursor inside it is disposed while the
+        // app's controls controller stays alive.
+        isEditorVisible.value = false;
+        await tester.pumpAndSettle();
+
+        // Start a floating cursor gesture on the surviving controller. This is exactly what
+        // the IME does (see DocumentImeInputClient.updateFloatingCursor). Nothing should
+        // answer it: the only widget that did is gone.
+        controlsController!.floatingCursorController
+          ..onStart()
+          ..onMove(const Offset(50, 0))
+          ..onStop();
+        await tester.pumpAndSettle();
+
+        expect(tester.takeException(), isNull);
+      });
     });
 
     group("controller lifecycle >", () {
@@ -880,4 +930,66 @@ Future<void> _pumpSingleParagraphApp(
       .simulateSoftwareKeyboardInsets(simulateSoftwareKeyboardAppearance)
       .useIosSelectionHeuristics(true)
       .pump();
+}
+
+
+/// Displays a [SuperEditor] beneath an app-owned [SuperEditorIosControlsScope], and swaps the
+/// editor out for a plain box whenever [isEditorVisible] goes false, while the scope - and its
+/// controller - stay mounted.
+///
+/// This is MemNote's visual/markdown mode toggle: the panel owns the controls controller and
+/// replaces the whole `SuperEditor` subtree beneath it.
+class _AppOwnedIosControlsScope extends StatefulWidget {
+  const _AppOwnedIosControlsScope({
+    required this.isEditorVisible,
+    this.onControllerCreated,
+  });
+
+  final ValueListenable<bool> isEditorVisible;
+
+  /// Reports the controller this scope owns, so a test can drive it directly.
+  final void Function(SuperEditorIosControlsController)? onControllerCreated;
+
+  @override
+  State<_AppOwnedIosControlsScope> createState() => _AppOwnedIosControlsScopeState();
+}
+
+class _AppOwnedIosControlsScopeState extends State<_AppOwnedIosControlsScope> {
+  late final MutableDocumentComposer _composer;
+  late final Editor _editor;
+  late final SuperEditorIosControlsController _controlsController;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _composer = MutableDocumentComposer();
+    _editor = createDefaultDocumentEditor(document: singleParagraphDoc(), composer: _composer);
+    _controlsController = SuperEditorIosControlsController();
+    widget.onControllerCreated?.call(_controlsController);
+  }
+
+  @override
+  void dispose() {
+    _controlsController.dispose();
+
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SuperEditorIosControlsScope(
+      controller: _controlsController,
+      child: ValueListenableBuilder<bool>(
+        valueListenable: widget.isEditorVisible,
+        builder: (context, isEditorVisible, child) {
+          if (!isEditorVisible) {
+            return const SizedBox.expand();
+          }
+
+          return SuperEditor(editor: _editor);
+        },
+      ),
+    );
+  }
 }

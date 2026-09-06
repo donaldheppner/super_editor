@@ -1119,6 +1119,83 @@ did not move. On the pre-patch code exactly the 8 non-iOS indent variants fail w
 test and every refusal test passes, which is the "iOS is demonstrably unchanged" evidence. Fork
 suite: 5685 passing, 7 skipped (5668 before these).
 
+### `EditorFloatingCursor.dispose()`: drop the floating cursor listener too (MemNote NOTE-170)
+
+`super_editor/lib/src/default_editor/document_gestures_touch_ios.dart`
+
+The fourth of the same defect class, after NOTE-141, NOTE-142 and NOTE-147 — and the second one
+(with NOTE-141) that is a reproduced crash rather than a leak inferred from a reading.
+
+`_EditorFloatingCursorState.didChangeDependencies` removes its `FloatingCursorListener` from the
+outgoing controls controller before subscribing to the replacement, so that half of the pair is
+balanced. `dispose()` removed only the scroll-change listener. `dispose()` now removes both.
+
+- **Reproduced first, and the repro is the ticket.** With the app owning the controls scope —
+  `SuperEditorIosControlsScope.rootOf` resolves the *root-most* scope, so `EditorFloatingCursor`
+  binds to the app's controller, not to `SuperEditor`'s — swapping `SuperEditor` out for a
+  `SizedBox` leaves a dead listener on a live controller. The next floating cursor gesture runs
+  `_onFloatingCursorStart` against a torn down tree and `_docLayout` throws
+  *"type 'Null' is not a subtype of type 'DocumentLayout' in type cast"*, because
+  `SuperEditor`'s `getDocumentLayout` is `() => _docLayoutKey.currentState as DocumentLayout`
+  and that key's state is gone. Verified before the fix, with that exact message and that exact
+  frame; gone after.
+
+- **Reachable from an ordinary MemNote action on iOS.** `super_note_editor_panel.dart` owns
+  `_iosControlsController` and hangs the scope above `SuperEditor`, and the visual/markdown mode
+  toggle swaps the whole `SuperEditor` subtree out and back while the panel state stays alive —
+  the same arrangement, and the same everyday gesture, that NOTE-141 hit on Android.
+
+- **The removal is idempotent, so a swap-then-dispose can't double-remove.**
+  `FloatingCursorController.removeListener` is a `Set.remove`, and the controller is not a
+  `ChangeNotifier`, so removing a listener that `didChangeDependencies` already dropped is a
+  no-op and removing from a controller the app has already disposed does not assert. The
+  NOTE-147 swap test exercises exactly that path (swap the controller, then tear the tree down)
+  and still passes.
+
+- **The test was checked for sensitivity in both directions.** Positive control: back out only
+  the `removeListener` line and the new test reports the production `_TypeError` through
+  `takeException()`. Negative control: with the leak reintroduced *and* the test's
+  `placeCaretInParagraph` removed, the test passes — `_onFloatingCursorStart` returns early on a
+  null selection, so the caret placement is the load-bearing part of the observable rather than
+  scenery.
+
+- **Audit of the rest of the file, since a missing pair comes in copies.**
+  `_EditorFloatingCursorState` has no other unbalanced pair: `scrollChangeSignal` is added in
+  `initState`, swapped in `didUpdateWidget` and removed in `dispose`, and the only other
+  subscription is a `ValueListenableBuilder` the framework manages.
+  `SuperEditorIosToolbarOverlayManagerState` and `SuperEditorIosMagnifierOverlayManagerState`
+  resolve the controller but register nothing on it. `_IosDocumentTouchInteractorState` balances
+  all five of its lifecycle subscriptions (document, focus node, IME connection, the
+  `WidgetsBinding` observer, and its own floating cursor listener plus
+  `cursorGeometryInViewport`).
+
+- **Found and deliberately left**: `_IosDocumentTouchInteractorState` adds
+  `scrollPosition.addListener(_onAutoScrollChange)` in `_onPanStart` and removes it in
+  `_onDragSelectionEnd`, a *gesture*-scoped pair that `dispose()` does not cover. Disposing the
+  interactor mid-drag therefore strands `_onAutoScrollChange`, and both halves of it
+  (`_updateDocumentSelectionOnAutoScrollFrame`, `_updateMagnifierFocalPointOnAutoScrollFrame`)
+  reach the same `_docLayout` cast, so it is the same crash. It only bites when
+  `scrollPosition` is an *ancestor* `Scrollable`'s position — the one case where it outlives the
+  interactor; when `SuperEditor` supplies its own scroller the position dies with the subtree
+  and the leak is inert. MemNote is the inert case (no ancestor scrollable), and the fix is not
+  the one-liner it looks like, because `scrollPosition` falls through to
+  `widget.scrollController.position`, which asserts if no position is attached at teardown.
+  Filed as MemNote NOTE-173 rather than ridden along on this crash fix.
+
+- **Genuine upstream candidate**, same as NOTE-141/142/147: upstream's own teardown, one
+  listener short, with upstream's own `didChangeDependencies` standing as the evidence of
+  intent, and no behaviour change for a client that respects the controller's stated lifetime.
+  Not submitted — that is Don's call.
+
+Tests: `super_editor/test/super_editor/mobile/super_editor_ios_overlay_controls_test.dart`,
+group "layer lifecycle >", one test — "doesn't drive the floating cursor after the editor is
+replaced". It needs MemNote's arrangement rather than the harness's, so a test-local
+`_AppOwnedIosControlsScope` owns the controls controller, swaps `SuperEditor` for a
+`SizedBox.expand`, and then drives `floatingCursorController.onStart()/onMove()/onStop()`
+directly — which is exactly what `DocumentImeInputClient.updateFloatingCursor` does, and the
+only way to raise the gesture once the editor (and its IME client) is gone. Fork suite: 5692
+passing, 7 skipped (5691 before this one test).
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:
