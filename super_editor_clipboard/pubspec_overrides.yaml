@@ -1,0 +1,17 @@
+# Resolve the sibling mono-repo package from this repo instead of pub.dev.
+#
+# `super_editor: ^0.3.0-dev.52` in pubspec.yaml points at the published package,
+# and that release no longer compiles against current Flutter (it still calls
+# `TextInputConnection.updateStyle`, which Flutter has removed), so `flutter test`
+# here fails to compile before it runs a single test.
+#
+# This file is committed on purpose. The fix has to work from a clean checkout
+# rather than from a comment the next person has to rediscover, and an override
+# only applies while this package is the root of a `pub get` — i.e. while
+# developing inside this repo — so it does not change what an app that depends on
+# the published `super_editor_clipboard` resolves.
+#
+# MemNote NOTE-137.
+dependency_overrides:
+  super_editor:
+    path: ../super_editor

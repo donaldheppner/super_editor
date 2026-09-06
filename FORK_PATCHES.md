@@ -5,6 +5,40 @@ This fork (github.com/donaldheppner/super_editor) tracks upstream
 and carries a small set of MemNote-specific patches. Each entry lists whether the
 patch is a candidate for upstreaming.
 
+## Working in this fork (NOTE-137)
+
+`main` is the trunk. MemNote's submodule gitlink pins at `main`, or at a ticket
+branch cut from it that has not landed yet — never at a branch `main` has been
+left behind by. Cut work as `note-NNN-<slug>` from `origin/main`, push the branch,
+and fast-forward `main` onto it once the matching MemNote PR merges.
+
+Until NOTE-137 the habit was the opposite: every ticket branch was pushed and
+MemNote pinned straight at its tip while `main` sat on the last upstream merge
+(`d6c90ab2`), eventually 14 commits behind the pin. That made `main` an actively
+misleading base — NOTE-130 had to be cut from the pin instead. NOTE-137
+fast-forwarded `main` to the then-pin `ee7f6eea` (a clean fast-forward: `main`
+held nothing the pin lacked). Keep it there by routing every ticket branch
+through `main`.
+
+Two more things a fresh clone needs:
+
+- **Long paths, twice.** Clone or `submodule update` with
+  `-c core.longpaths=true`, *and* `git config core.longpaths true` inside the
+  resulting checkout. Without the first, checkout dies on
+  `super_clones/ios_messenger/…` ("Filename too long") and silently leaves a
+  submodule on the wrong commit; without the second, `git status` reports ~121
+  phantom deletions.
+- **Sibling packages must resolve from this repo.** `super_editor_clipboard`'s
+  published pubspec takes `super_editor` from pub.dev, and `0.3.0-dev.52` no
+  longer compiles against current Flutter (`TextInputConnection.updateStyle`), so
+  a committed `pubspec_overrides.yaml` redirects it at `../super_editor`.
+  `super_editor_spellcheck` and `super_editor_clipboard/example` already carry
+  equivalent `dependency_overrides` in their own pubspecs. `super_editor` and
+  `super_text_layout` still resolve `attributed_text` / `super_text_layout` /
+  `super_keyboard` from pub.dev, and build and test fine that way only because the
+  fork carries no patch to any of those three — the day it does, uncomment the
+  `dependency_overrides` block already sitting in their pubspecs.
+
 ## Upstream PR status (NOTE-43)
 
 The NOTE-40/41/42 codec work below was sliced into six stacked PRs against
