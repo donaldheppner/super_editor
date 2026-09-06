@@ -848,7 +848,7 @@ restoring the file and re-running: 4 passing / 6 failing before, 10 passing afte
 `flutter analyze` in the clone: 12 issues before and after, all pre-existing
 `deprecated_member_use` infos.
 
-### `flutter pub get` in the examples must not dirty the tree (MemNote NOTE-144)
+### `flutter pub get` in the examples and clones must not dirty the tree (MemNote NOTE-144, NOTE-169)
 
 `.gitattributes` (new, repo root), plus `pubspec.lock` added to
 `super_editor_clipboard/example/.gitignore`, `super_editor_spellcheck/example/.gitignore`,
@@ -918,6 +918,52 @@ Verified from a clean checkout: `flutter pub get` in all five examples and in th
 top-level packages (`attributed_text`, `super_text_layout`, `super_keyboard`, `super_editor`,
 `super_editor_spellcheck`, `super_editor_clipboard`, `flutter_test_registry`), then
 `git status --short` inside the submodule — empty. No test changes; this touches no Dart code.
+
+**NOTE-169 follow-up: the nine apps NOTE-144 scoped out.** NOTE-144 named "the five package
+examples" and deliberately left nine other tracked lockfiles alone: the seven `super_clones/`
+apps (`bear`, `google_docs`, `ios_messenger`, `medium`, `obsidian`, `quill`, `slack`) plus
+`super_editor/example_chat` and `super_editor/example_perf`. `.gitattributes` above already
+globs all of them for the line-ending class — nothing to add there. `git diff --ignore-cr-at-eol
+--stat` before and after `flutter pub get` in each produced identical stats, confirming any
+diff is real re-resolution, not line-ending noise, same as NOTE-144's method.
+
+Six of the nine hit the exact same three drivers as above, because they all depend on
+`super_editor` via a path dependency (direct or through `dependency_overrides`): `bear`,
+`google_docs`, `slack` and `example_chat`/`example_perf` each moved `attributed_text` 0.4.5 →
+0.4.7, `super_editor` 0.3.0-dev.51 → dev.52, and `super_text_layout` 0.1.20 → 0.1.21; `quill`
+hit all of that plus the SDK-driven downgrade class (`test` 1.31.0 → 1.30.0 and friends,
+`analyzer`/`dart_style`/`meta`/`_fe_analyzer_shared` moving with it). These six are now
+untracked the same way, with the same copied comment: `super_clones/bear/.gitignore`,
+`super_clones/google_docs/.gitignore`, `super_clones/quill/.gitignore`,
+`super_clones/slack/.gitignore`, `super_editor/example_chat/.gitignore` and
+`super_editor/example_perf/.gitignore`.
+
+The other three are not the same call, which is why this wasn't done in bulk:
+
+- `super_clones/medium` and `super_clones/obsidian` don't depend on `super_editor` at all — no
+  path dependency, no override, nothing but ordinary pub.dev packages (`macos_window_utils`,
+  `tab_kit`, `path`, `cupertino_icons`, `flutter_lints`). None of the three churn drivers apply,
+  `flutter pub get` produced zero diff in either, and there is no mechanism by which the fork's
+  own changes would ever touch these two locks. Left tracked — this is just an ordinary Flutter
+  app lockfile, which upstream's own stated policy says to commit.
+- `super_clones/ios_messenger` does depend on `super_editor` via path, but its own `pubspec.yaml`
+  still pins `super_keyboard: ^0.3.0` while the fork's `super_editor` has required
+  `super_keyboard ^0.4.0` for several versions now; `flutter pub get` fails outright with a
+  version-solving error instead of re-resolving. The committed lock is already stale on top of
+  that — it pins `super_editor` at `0.3.0-dev.40`, a dozen-odd fork versions behind today's
+  `dev.52` — so it was never being kept current by anyone running `pub get` here. Left tracked
+  as-is: untracking a lockfile that can't currently be regenerated wouldn't fix the underlying
+  constraint bug, and the acceptance check (`pub get` leaves the tree clean) holds trivially
+  either way, since the failed resolve errors out before writing anything. The stale
+  `super_keyboard` constraint is a separate, pre-existing bug, not fixed here (see MemNote
+  NOTE-169's findings).
+
+Verified from this checkout: `flutter pub get` in all nine apps, `git diff --ignore-cr-at-eol
+--stat` to separate the churn classes, then (after untracking the six and re-running
+`flutter pub get` in each) `git status --short` inside the submodule — empty. `medium` and
+`obsidian` were untouched throughout; `ios_messenger`'s `pub get` fails before writing
+`pubspec.lock`, so it was never dirty to begin with. No Dart code changed, so the fork's test
+suite was not re-run for this ticket.
 
 ### `FloatingCursorController.dispose()`: release the fourth notifier too (MemNote NOTE-147)
 
