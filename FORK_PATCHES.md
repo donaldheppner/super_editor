@@ -1053,6 +1053,61 @@ above `SuperEditor` so a test can drive the controller the layers actually resol
 (`SuperEditorIosControlsScope.rootOf` takes the root-most scope).
 Fork suite: 5674 passing, 7 skipped (5669 before these five).
 
+### IME tab delta: indent a list item on every platform, not only iOS (MemNote NOTE-155)
+
+`TextDeltasDocumentEditor` turns a `	` text delta into `commonOps.indentListItem()`, on both
+the insertion and the replacement branch — but both were gated on
+`defaultTargetPlatform == TargetPlatform.iOS`. Off iOS the delta fell past them and the tab was
+applied as ordinary text, so the same gesture indented a bullet on an iPad and typed a tab
+character into it on a Tab-capable Android soft keyboard. Nothing about a list indent is
+iOS-specific; the gate was standing in for "this is the platform we have seen produce a `	`
+delta".
+
+Both branches now route through one private `_applyTabDelta()`, which the two callers share so
+they cannot answer the same keypress differently.
+
+**The change is deliberately additive.** The only behaviour that moves is a Tab that *can*
+indent, which now indents everywhere. The *refused* case — the selection isn't in a list item,
+or the item has nothing above it to nest under (`canIndentListItem`) — is left exactly as each
+platform already had it: swallowed on iOS, inserted as a tab character everywhere else. That
+asymmetry is the one thing NOTE-155 asked to be decided rather than inherited, and the decision
+was to keep it, for two reasons.
+
+- **Evidence.** Changing what a refused Tab does would change a keypress for every consumer on
+  the strength of a code reading, and the reading that would justify it — which channel a Tab
+  arrives on, and whether something has already declined it — is precisely what has never been
+  observed on a device. MemNote NOTE-138 is open for exactly that verification.
+- **It is not arbitrary.** The two platforms produce this delta for different reasons. An iOS
+  on-screen keyboard has no Tab key, so a `	` delta on iOS comes from a hardware keyboard
+  attached to an iPad and reaches the text input *because* Flutter's key path declined it
+  (`FlutterTextInputPlugin` is a secondary key responder). By then `tabToIndentParagraph` and
+  the rest of `defaultKeyboardActions` have had their turn and passed, so typing a tab on
+  second look would overrule them. Off iOS the delta is a primary input from a keyboard that
+  really has a Tab key, and nothing has declined it yet.
+
+NOTE-131's honest `indentListItem()` return value is what makes this expressible: it reports the
+refusal as well as making it, so the branch can swallow a successful indent and fall through on
+a refusal without consulting the platform for the first half.
+
+**Genuine upstream candidate.** The gate is a plain platform bug for any consumer with a
+Tab-capable soft keyboard, and the fix leaves every existing behaviour intact, which is the shape
+an upstream PR wants. Not submitted — that is Don's call.
+
+**Why MemNote cares — and why it changes nothing for MemNote.** MemNote's own
+`ListItemTabImeOverrides` (NOTE-127/139) intercepts every `	` delta before
+`DocumentImeInputClient` sees it, so this branch is unreachable from the app. It stays that way
+on purpose: `TabIndentClaim` (NOTE-138) is app code and cannot see an indent performed inside the
+fork, and MemNote's answer for a refused Tab is neither of the fork's two — it swallows on every
+platform, because a note is stored as markdown and neither a literal tab nor a paragraph indent
+survives the round trip (see the app's `tab_policy.dart`). The fork fix is for other consumers.
+
+Tests: new `super_editor/test/super_editor/text_entry/ime/ime_tab_test.dart` — 17 tests across
+"insertion delta >" and "replacement delta >". The indent case runs on every platform; the
+refusal cases are asserted per platform, and are the regression net showing the refused behaviour
+did not move. On the pre-patch code exactly the 8 non-iOS indent variants fail while every iOS
+test and every refusal test passes, which is the "iOS is demonstrably unchanged" evidence. Fork
+suite: 5685 passing, 7 skipped (5668 before these).
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

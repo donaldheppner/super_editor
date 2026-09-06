@@ -286,6 +286,63 @@ class TextDeltasDocumentEditor {
     return true;
   }
 
+  /// Handles a `\t` that the platform reported as a text delta, and returns whether the
+  /// delta was consumed — `true` means the caller must NOT also apply it as text.
+  ///
+  /// Both `_applyInsertion` and `_applyReplacement` route their tab delta through here so
+  /// the two can't answer the same keypress differently.
+  ///
+  /// ## Tab indents a list item on every platform
+  ///
+  /// This used to be gated on `defaultTargetPlatform == TargetPlatform.iOS`, on both delta
+  /// branches, so a Tab reported as text indented a list item on iOS and typed a literal tab
+  /// character everywhere else. Nothing about a list indent is iOS-specific; the gate was
+  /// standing in for "this is the platform we've seen produce a `\t` delta", and it made the
+  /// same gesture do two unrelated things depending on which keyboard reported it.
+  ///
+  /// The gate is gone. What remains platform-specific is only the *refused* case, below.
+  ///
+  /// ## The refused case is deliberately left as each platform already had it
+  ///
+  /// `CommonEditorOperations.indentListItem` reports whether it actually indented — it
+  /// refuses when the selection isn't in a list item, and when the list item has nothing
+  /// above it to nest under (`canIndentListItem`). Before that bool existed this branch
+  /// swallowed the delta either way, so on iOS a Tab in a paragraph has always done nothing.
+  /// Off iOS the branch was never reached, so a Tab in a paragraph has always typed a tab.
+  ///
+  /// Those two answers are preserved exactly, because the change here is meant to be purely
+  /// additive: the only behaviour that moves is a Tab that *can* indent, which now indents
+  /// everywhere instead of only on iOS. Every other outcome, on every platform, is what it
+  /// was. A library shouldn't change what a keypress does for its consumers on the strength
+  /// of a code reading, and the reading that would justify it — which channel a Tab arrives
+  /// on, and whether it has already been declined elsewhere — is exactly the part that has
+  /// not been observed on a device.
+  ///
+  /// The asymmetry is also not arbitrary, because the two platforms produce this delta for
+  /// different reasons. An iOS on-screen keyboard has no Tab key at all, so a `\t` delta on
+  /// iOS comes from a hardware keyboard attached to an iPad, forwarded to the text input
+  /// *because* Flutter's key path declined it — `FlutterTextInputPlugin` is registered as a
+  /// secondary key responder. By then super_editor's own key handlers, `tabToIndentParagraph`
+  /// among them, have already had their turn and passed; inserting a tab character on second
+  /// look would overrule them. Off iOS the delta comes from a soft keyboard that really does
+  /// have a Tab key, as a primary input that nothing has declined yet, so inserting the
+  /// character it produced is the ordinary reading of the delta.
+  ///
+  /// An app that wants one answer on every platform can impose it without patching this:
+  /// `SuperEditor.imeOverrides` sits between the platform and `DocumentImeInputClient`, so a
+  /// `DeltaTextInputClientDecorator` can answer a `\t` delta before it ever reaches here.
+  bool _applyTabDelta() {
+    if (commonOps.indentListItem()) {
+      // A list item moved. Consuming the delta is what keeps the tab from *also* being
+      // typed into the item that just indented.
+      return true;
+    }
+
+    // The indent was refused. iOS has always swallowed such a Tab; every other platform has
+    // always let it through and typed a tab character. Both are preserved — see above.
+    return defaultTargetPlatform == TargetPlatform.iOS;
+  }
+
   void _applyInsertion(TextEditingDeltaInsertion delta) {
     editorImeLog.fine('Inserted text: "${delta.textInserted}"');
     editorImeLog.fine("Insertion offset: ${delta.insertionOffset}");
@@ -310,14 +367,16 @@ class TextDeltasDocumentEditor {
       return;
     }
 
-    if (delta.textInserted == "\t" && (defaultTargetPlatform == TargetPlatform.iOS)) {
-      // On iOS, tabs pressed at the the software keyboard are reported here.
-      commonOps.indentListItem();
+    if (delta.textInserted == "\t") {
+      // A Tab that the platform reported as text. See `_applyTabDelta`.
+      if (_applyTabDelta()) {
+        // Update the local IME value that changes with each delta.
+        _previousImeValue = delta.apply(_previousImeValue);
 
-      // Update the local IME value that changes with each delta.
-      _previousImeValue = delta.apply(_previousImeValue);
+        return;
+      }
 
-      return;
+      // Fall through and insert the tab as ordinary text.
     }
 
     editorImeLog.fine(
@@ -416,10 +475,17 @@ class TextDeltasDocumentEditor {
       return;
     }
 
-    if (delta.replacementText == "\t" && (defaultTargetPlatform == TargetPlatform.iOS)) {
-      // On iOS, tabs pressed at the the software keyboard are reported here.
-      commonOps.indentListItem();
-      return;
+    if (delta.replacementText == "\t") {
+      // A Tab that the platform reported as text. See `_applyTabDelta`.
+      if (_applyTabDelta()) {
+        // Update the local IME value that changes with each delta. Same reason as the
+        // newline guard above: the platform applied the tab whether or not we did.
+        _previousImeValue = delta.apply(_previousImeValue);
+
+        return;
+      }
+
+      // Fall through and replace the selection with the tab as ordinary text.
     }
 
     replace(delta.replacedRange, delta.replacementText);
