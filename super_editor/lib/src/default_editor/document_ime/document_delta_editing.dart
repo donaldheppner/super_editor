@@ -472,6 +472,13 @@ class TextDeltasDocumentEditor {
       } else {
         editorImeLog.fine("Skipping replacement delta because its a newline");
       }
+
+      // Update the local IME value that changes with each delta. We do this even though we
+      // didn't replace anything, because this value mirrors what the *platform* thinks the
+      // text is, and the platform applied this delta no matter what we did with it. This
+      // matches every early return in `_applyInsertion`.
+      _previousImeValue = delta.apply(_previousImeValue);
+
       return;
     }
 

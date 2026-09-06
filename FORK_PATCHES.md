@@ -1053,7 +1053,7 @@ above `SuperEditor` so a test can drive the controller the layers actually resol
 (`SuperEditorIosControlsScope.rootOf` takes the root-most scope).
 Fork suite: 5674 passing, 7 skipped (5669 before these five).
 
-### IME tab delta: indent a list item on every platform, not only iOS (MemNote NOTE-155)
+### IME tab delta: indent a list item on every platform, not only iOS (MemNote NOTE-155, NOTE-156)
 
 `TextDeltasDocumentEditor` turns a `	` text delta into `commonOps.indentListItem()`, on both
 the insertion and the replacement branch — but both were gated on
@@ -1088,6 +1088,17 @@ was to keep it, for two reasons.
 NOTE-131's honest `indentListItem()` return value is what makes this expressible: it reports the
 refusal as well as making it, so the branch can swallow a successful indent and fall through on
 a refusal without consulting the platform for the first half.
+
+Also fixed here, from MemNote NOTE-156: `_applyReplacement`'s early returns never updated
+`_previousImeValue`, while every early return in `_applyInsertion` does — including the one that
+spells out why ("this value mirrors what the *platform* thinks the text is, and the platform
+applied this delta no matter what we did with it"). Both replacement guards, newline as well as
+tab, now keep that invariant. The exposure was narrower than it looks: `_previousImeValue` is
+rebuilt from the serialization at the top of every `applyDeltas`, so it never goes stale across
+batches, and its only reader is `_nextImeValue`, which only `_updateImeRangeMappingAfterNodeSplit`
+consumes. A stale value could therefore only reach a *later* delta in the same batch that splits
+a text node — which a lone Tab keypress never produces. Restored as an invariant, not as a bug
+fix.
 
 **Genuine upstream candidate.** The gate is a plain platform bug for any consumer with a
 Tab-capable soft keyboard, and the fix leaves every existing behaviour intact, which is the shape
