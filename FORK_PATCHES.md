@@ -848,6 +848,77 @@ restoring the file and re-running: 4 passing / 6 failing before, 10 passing afte
 `flutter analyze` in the clone: 12 issues before and after, all pre-existing
 `deprecated_member_use` infos.
 
+### `flutter pub get` in the examples must not dirty the tree (MemNote NOTE-144)
+
+`.gitattributes` (new, repo root), plus `pubspec.lock` added to
+`super_editor_clipboard/example/.gitignore`, `super_editor_spellcheck/example/.gitignore`,
+`super_keyboard/example/.gitignore` and `super_text_layout/example/.gitignore`, and one
+regenerated line in `super_editor/example/windows/flutter/generated_plugins.cmake`.
+
+Running `flutter pub get` in the five package examples left ten tracked files modified, from a
+checkout that was clean a moment earlier. Measured on a fresh clone (Flutter 3.41.4, Windows,
+`core.autocrlf=true`):
+
+```
+ M super_editor/example/macos/Flutter/GeneratedPluginRegistrant.swift
+ M super_editor/example/windows/flutter/generated_plugin_registrant.cc
+ M super_editor/example/windows/flutter/generated_plugin_registrant.h
+ M super_editor/example/windows/flutter/generated_plugins.cmake
+ M super_editor_clipboard/example/pubspec.lock
+ M super_editor_spellcheck/example/macos/Flutter/GeneratedPluginRegistrant.swift
+ M super_editor_spellcheck/example/pubspec.lock
+ M super_keyboard/example/pubspec.lock
+ M super_text_layout/example/macos/Flutter/GeneratedPluginRegistrant.swift
+ M super_text_layout/example/pubspec.lock
+```
+
+`git diff --ignore-cr-at-eol` collapses that to five files, which is how the ten split into
+three unrelated causes rather than one.
+
+**Line endings (six of the seven registrant files) — fixed by `.gitattributes`.** The
+registrants are stored here with LF; `flutter pub get` always writes LF; but a checkout with
+`core.autocrlf=true` — Git for Windows' installer default — materialises them as CRLF, so the
+next `pub get` "changes" every one of them back. `text eol=lf` makes the checked-out bytes
+match what `pub get` regenerates. `git ls-files --eol` goes from `i/lf w/crlf` to `i/lf w/lf`;
+no blob is rewritten and no content changes. The patterns are globs, not the seven paths, so
+they also cover `example_chat`, `example_perf` and the seven `super_clones/` apps — 34 tracked
+files in all — and any app added later.
+
+**Lockfiles (four files) — fixed by untracking them, because `eol=lf` cannot touch this.** The
+diffs are real dependency re-resolution, and three independent things drive them: pub.dev moving
+(`super_text_layout` 0.1.20 → 0.1.21, `attributed_text` 0.4.5 → 0.4.7, neither upper-pinned), the
+Flutter SDK's own `flutter_test` constraint (`test` 1.31.0 → **1.30.0**, `test_api` 0.7.11 →
+0.7.10, `test_core` 0.6.17 → 0.6.16 — downgrades, so the committed locks were resolved against a
+different SDK than the one in hand), and this repo's own version bumps leaking in through the
+path dependency (`super_editor` 0.3.0-dev.51 → dev.52). Committing today's output would go clean
+on one machine and re-dirty on the next SDK, the next publish, or the next version bump.
+`super_editor/example/.gitignore` already stopped tracking its lockfile for exactly this reason,
+and says so in a comment; this copies that comment into the four examples that never got the
+same treatment. The library packages' own lockfiles were already untracked.
+
+**One genuinely stale generated file — regenerated and committed.**
+`super_editor/example/windows/flutter/generated_plugins.cmake` gains `jni` in
+`FLUTTER_FFI_PLUGIN_LIST`: `path_provider_android` 2.3.1 moved to JNI bindings, so the resolved
+plugin set really did change and the committed file was out of date. Note the standing caveat —
+that example's lockfile has been untracked upstream for a long time, so its generated registrants
+are derived from an unpinned resolution and can go stale again the same way. That is a rare,
+low-volume class (one line, once), unlike the two above which fired on every single `pub get`.
+Untracking the generated registrants as well would close it, but Flutter's own templates track
+them and it is a bigger call than this ticket needs.
+
+**Genuine upstream candidate, and the most clearly upstreamable patch in this file.** Not
+submitted. `.gitattributes` is a pure line-ending pin with no code and no behaviour change, and
+every Windows contributor on the installer's default `core.autocrlf` hits this. The four
+`.gitignore` lines are upstream's own stated policy, applied consistently to the examples that
+were missed — a maintainer could reasonably prefer reproducible example builds instead, so that
+half is the part worth asking about. If it is offered upstream, drop the "MemNote NOTE-144"
+reference from the `.gitattributes` comment first, as the NOTE-40/41/42 branches did.
+
+Verified from a clean checkout: `flutter pub get` in all five examples and in the seven
+top-level packages (`attributed_text`, `super_text_layout`, `super_keyboard`, `super_editor`,
+`super_editor_spellcheck`, `super_editor_clipboard`, `flutter_test_registry`), then
+`git status --short` inside the submodule — empty. No test changes; this touches no Dart code.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:
