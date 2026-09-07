@@ -29,6 +29,81 @@ void main() {
       expect(SuperEditorInspector.findParagraphStyle("1")!.color, Colors.white);
     });
 
+    group('component builders >', () {
+      // `componentBuilders` is a layout-presenter input just like `stylesheet`: it is copied
+      // into the presenter when the presenter is built and read nowhere else. Until MemNote
+      // NOTE-175 `didUpdateWidget` never compared it, so a client that changed its builders
+      // without also changing its `Stylesheet` instance kept the *first* builders forever.
+      //
+      // Both pumps below hand `SuperEditor` the SAME `Stylesheet`, so the stylesheet term
+      // cannot be what rebuilds the presenter.
+      Widget buildEditorWith(Editor editor, List<ComponentBuilder> builders) => MaterialApp(
+            home: Scaffold(
+              body: SuperEditor(
+                editor: editor,
+                stylesheet: defaultStylesheet,
+                componentBuilders: builders,
+              ),
+            ),
+          );
+
+      Editor createEditor() => createDefaultDocumentEditor(
+            document: MutableDocument(
+              nodes: [
+                ParagraphNode(id: "1", text: AttributedText("Hello, world!")),
+              ],
+            ),
+            composer: MutableDocumentComposer(),
+          );
+
+      testWidgetsOnAllPlatforms('are re-read when a builder changes but the stylesheet does not', (tester) async {
+        final editor = createEditor();
+        final builder1 = _CountingComponentBuilder();
+        final builder2 = _CountingComponentBuilder();
+
+        await tester.pumpWidget(buildEditorWith(editor, [builder1, ...defaultComponentBuilders]));
+
+        // The first builder was consulted, so it is in the presenter.
+        expect(builder1.createViewModelCallCount, greaterThan(0));
+        expect(builder2.createViewModelCallCount, 0);
+        final builder1CallsBeforeSwap = builder1.createViewModelCallCount;
+
+        // Replace the builder instance without touching anything else. Same `SuperEditor`
+        // element, so this takes the `didUpdateWidget` path.
+        await tester.pumpWidget(buildEditorWith(editor, [builder2, ...defaultComponentBuilders]));
+        await tester.pump();
+
+        // The replacement builder reached the presenter...
+        expect(builder2.createViewModelCallCount, greaterThan(0));
+        // ...and the removed builder is no longer in it.
+        expect(builder1.createViewModelCallCount, builder1CallsBeforeSwap);
+      });
+
+      testWidgetsOnAllPlatforms('do not rebuild the presenter when the same instances are passed again',
+          (tester) async {
+        final editor = createEditor();
+        final builder = _CountingComponentBuilder();
+
+        await tester.pumpWidget(buildEditorWith(editor, [builder, ...defaultComponentBuilders]));
+
+        final presenterBefore = tester.state<SuperEditorState>(find.byType(SuperEditor)).presenter;
+        final callsBefore = builder.createViewModelCallCount;
+
+        // A NEW list holding the SAME builder instances — what a client that memoises its
+        // builders produces, and what `SuperEditor`'s own constructor produces regardless,
+        // since it allocates a list to prepend every plugin's builders. Comparing the lists
+        // by identity here would rebuild the presenter on every single build.
+        await tester.pumpWidget(buildEditorWith(editor, [builder, ...defaultComponentBuilders]));
+        await tester.pump();
+
+        expect(
+          identical(tester.state<SuperEditorState>(find.byType(SuperEditor)).presenter, presenterBefore),
+          isTrue,
+        );
+        expect(builder.createViewModelCallCount, callsBefore);
+      });
+    });
+
     testWidgetsOnArbitraryDesktop('changes visual text style when attributions change', (tester) async {
       final testContext = await tester
           .createDocument() //
@@ -305,4 +380,26 @@ final _stylesheetWithWhiteText = Stylesheet(
 
 TextStyle inlineTextStyler(Set<Attribution> attributions, TextStyle base) {
   return base;
+}
+
+/// A [ComponentBuilder] that handles nothing and only records that it was asked,
+/// so a test can tell whether this instance is the one inside the layout
+/// presenter (MemNote NOTE-175).
+class _CountingComponentBuilder implements ComponentBuilder {
+  int createViewModelCallCount = 0;
+
+  @override
+  SingleColumnLayoutComponentViewModel? createViewModel(Document document, DocumentNode node) {
+    createViewModelCallCount += 1;
+    // Null means "not mine" — the presenter falls through to the next builder.
+    return null;
+  }
+
+  @override
+  Widget? createComponent(
+    SingleColumnDocumentComponentContext componentContext,
+    SingleColumnLayoutComponentViewModel componentViewModel,
+  ) {
+    return null;
+  }
 }

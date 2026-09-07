@@ -1331,7 +1331,7 @@ directly — which is exactly what `DocumentImeInputClient.updateFloatingCursor`
 only way to raise the gesture once the editor (and its IME client) is gone. Fork suite: 5692
 passing, 7 skipped (5691 before this one test).
 
-### Plugin swap must rebuild the layout presenter, not ride on `Stylesheet` having no `==` (MemNote NOTE-162)
+### Plugin swap must rebuild the layout presenter, not ride on `Stylesheet` having no `==` (MemNote NOTE-162, NOTE-175)
 
 `super_editor/lib/src/default_editor/super_editor.dart`, `super_editor/lib/src/core/styles.dart`
 
@@ -1379,12 +1379,39 @@ addition to when the stylesheet changes.
   evidence of intent. The only behaviour change is an extra presenter rebuild in a case where
   the presenter was stale. Not submitted — that is Don's call.
 
-- **Not attempted: the per-build presenter rebuild itself.** That is the performance half of the
-  ticket and it is not fixed here; see the MemNote-side finding. Measured while in here: it is
-  per *panel build*, not per frame — typing does not rebuild the panel (verified: the
-  `SuperEditor` widget instance and its `Stylesheet` are identical after five inserts), so it
-  costs on discrete events (theme/layout/font changes, mode toggle, paste, image and table
-  insert, window metrics) rather than in a hot loop.
+- **Not attempted then: the per-build presenter rebuild itself.** That was the performance half
+  of NOTE-162's ticket. Measured while in here: it is per *panel build*, not per frame — typing
+  does not rebuild the panel (verified: the `SuperEditor` widget instance and its `Stylesheet`
+  are identical after five inserts), so it costs on discrete events (theme/layout/font changes,
+  mode toggle, paste, image and table insert, window metrics) rather than in a hot loop. MemNote
+  NOTE-175 fixed it app-side (the panel now memoises both presenter inputs) and closed the fork
+  half below.
+
+**NOTE-175: `didUpdateWidget` now compares `componentBuilders` too.** The `componentBuilders`
+hazard the bullets above name — "an `==` on `Stylesheet` alone would freeze stale component
+builders into the presenter" — is closed at this end rather than left as a note for callers.
+`didUpdateWidget`'s presenter-rebuild condition gained
+`!listEquals(widget.componentBuilders, oldWidget.componentBuilders)`.
+
+- **`listEquals`, not list identity.** List identity is not merely too strict here, it is dead
+  code: `SuperEditor`'s constructor *always* allocates a new list, because it prepends every
+  plugin's `componentBuilders` to the caller's. `listEquals` compares elements, and since
+  `ComponentBuilder` implementations rarely define `operator ==` that is element identity — so a
+  caller that holds its builder instances in state gets no rebuild, and a caller that constructs
+  them inline in `build` gets one per build. The latter is what such a caller already got before
+  this change (via the same `Stylesheet` identity accident, since a caller building builders
+  inline is almost always building the stylesheet inline too), so for existing clients this is
+  close to behaviour-neutral; what it changes is the one broken case, a caller that memoises the
+  stylesheet but not the builders.
+
+- **Why it is worth the term.** `componentBuilders` is a documented widget parameter that was
+  silently ignored after the first build. The doc comment on the field now says so, names
+  `listEquals`, and tells callers to hold their builder instances rather than rebuild them in
+  `build()`.
+
+- **Upstream candidate, same standing as the plugin-diff term.** Same shape of defect (a
+  presenter input read once and never re-read), same kind of fix, and the only behaviour change
+  is an extra presenter rebuild where the presenter was stale. Not submitted — Don's call.
 
 Tests: `super_editor/test/super_editor/supereditor_plugin_test.dart`, group
 "appended style phases >", one test — "are re-read when the plugin set changes but the stylesheet
@@ -1393,6 +1420,18 @@ cannot satisfy it and only the plugin diff can; the plugin contributes a countin
 `SingleColumnLayoutStylePhase` and the test asserts the replacement's phase ran and the removed
 one's did not run again. Sensitivity: verified failing on all five platform variants before the
 fix, passing after. Fork suite: 5697 passing, 7 skipped (5692 before these five variants).
+
+NOTE-175 tests: `super_editor/test/super_editor/supereditor_style_test.dart`, group
+"component builders >", two tests. "are re-read when a builder changes but the stylesheet does
+not" pins one `defaultStylesheet` instance across both pumps and swaps a counting
+`ComponentBuilder` (one that records `createViewModel` calls and returns `null`, i.e. "not
+mine"), asserting the replacement is consulted and the removed one is not consulted again.
+"do not rebuild the presenter when the same instances are passed again" passes a *new list* of
+the *same* builder instances and asserts `SuperEditorState.presenter` is identical — the
+regression guard against someone "simplifying" `listEquals` into a list-identity check, which
+would rebuild the presenter on every build. Sensitivity: the first test verified failing on all
+five platform variants before the fix, passing after. Fork suite: 5712 passing, 7 skipped (5702
+before these ten variants, at fork `main` `3034ff3c`).
 
 ### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded handles (MemNote NOTE-171)
 

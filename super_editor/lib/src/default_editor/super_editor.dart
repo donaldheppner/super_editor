@@ -1,5 +1,5 @@
 import 'package:attributed_text/attributed_text.dart';
-import 'package:flutter/foundation.dart' show ValueListenable, defaultTargetPlatform;
+import 'package:flutter/foundation.dart' show ValueListenable, defaultTargetPlatform, listEquals;
 import 'package:flutter/material.dart' hide SelectableText;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -324,6 +324,21 @@ class SuperEditor extends StatefulWidget {
   /// Priority list of widget factories that create instances of
   /// each visual component displayed in the document layout, e.g.,
   /// paragraph component, image component, horizontal rule component, etc.
+  ///
+  /// These builders are copied into the layout presenter when it is built, so a
+  /// change here only reaches the screen if the presenter is rebuilt.
+  /// [SuperEditorState.didUpdateWidget] therefore compares them with
+  /// [listEquals] — *element* identity, not list identity: this list is never
+  /// the one the caller passed, because the constructor allocates a new one to
+  /// prepend every plugin's builders.
+  ///
+  /// The practical consequence for callers: a builder is "unchanged" only if it
+  /// is the *same instance* as last build. `ComponentBuilder` implementations
+  /// rarely define `operator ==`, so constructing them inline in `build` —
+  /// `componentBuilders: [MyBuilder(theme), ...defaultComponentBuilders]` —
+  /// rebuilds the presenter on every build, which re-runs the whole style
+  /// pipeline over every node. Hold the instances in state and rebuild them only
+  /// when their own inputs change (MemNote NOTE-175).
   final List<ComponentBuilder> componentBuilders;
 
   /// All actions that this editor takes in response to key
@@ -556,7 +571,9 @@ class SuperEditorState extends State<SuperEditor> {
       if (widget.selectionStyles != oldWidget.selectionStyles) {
         _docLayoutSelectionStyler.selectionStyles = widget.selectionStyles;
       }
-      if (didPluginsChange || widget.stylesheet != oldWidget.stylesheet) {
+      if (didPluginsChange ||
+          widget.stylesheet != oldWidget.stylesheet ||
+          !listEquals(widget.componentBuilders, oldWidget.componentBuilders)) {
         // Most of what a plugin contributes - overlay and underlay builders, keyboard actions,
         // content tap handlers - is read straight out of `widget.plugins` in `build()`, so a
         // replaced plugin instance takes effect on its own. Its `appendedStylePhases` and its
@@ -566,6 +583,14 @@ class SuperEditorState extends State<SuperEditor> {
         // the detached plugin's phase would stay in the pipeline, still holding whatever state
         // the plugin left behind when it was detached. See `Stylesheet` in `core/styles.dart`
         // for why the stylesheet term alone used to cover this by accident (MemNote NOTE-162).
+        //
+        // `widget.componentBuilders` is the same kind of presenter input, and it used to be
+        // covered by that same accident: a client that hands `SuperEditor` new builders
+        // without also handing it a new `Stylesheet` kept the *first* set of builders forever,
+        // with whatever they captured. `listEquals` compares elements, not the list, because
+        // this widget's constructor allocates a new list every time to prepend the plugins'
+        // builders - so list identity is never true and would make the term dead code
+        // (MemNote NOTE-175).
         _createLayoutPresenter();
       }
     }
