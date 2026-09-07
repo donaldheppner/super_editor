@@ -1455,18 +1455,19 @@ would rebuild the presenter on every build. Sensitivity: the first test verified
 five platform variants before the fix, passing after. Fork suite: 5712 passing, 7 skipped (5702
 before these ten variants, at fork `main` `3034ff3c`).
 
-### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded handles (MemNote NOTE-171)
+### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded and collapsed handles (MemNote NOTE-171, NOTE-176)
 
-`super_editor/lib/src/default_editor/document_gestures_touch_android.dart`
+`super_editor/lib/src/default_editor/document_gestures_touch_android.dart`,
+`super_editor/lib/src/chat/super_message_android_overlays.dart`
 
 The other half of NOTE-148, which fixed iOS and left this one measured but untouched. Android
 splits a selection handle across two widgets: `AndroidHandlesDocumentLayer` builds the caret and
-the expanded handles' `Leader`s, and `SuperEditorAndroidControlsOverlayManager` builds the handle
-widgets that follow those `Leader`s. Only the layer consulted
-`areSelectionHandlesAllowed`. `_buildExpandedHandles` now goes through a new
-`_buildExpandedHandle` helper that wraps each handle in a `ValueListenableBuilder` on that
-notifier as well as on `shouldShowExpandedHandles`, so `preventSelectionHandles()` takes the
-handles out of the tree the way iOS does.
+the handles' `Leader`s, and `SuperEditorAndroidControlsOverlayManager` builds the handle widgets
+that follow those `Leader`s. Only the layer consulted `areSelectionHandlesAllowed`. Every handle
+this overlay builds now goes through a `_buildHandle` helper that wraps it in a
+`ValueListenableBuilder` on that notifier as well as on its own visibility notifier, so
+`preventSelectionHandles()` takes the handles out of the tree the way iOS does. NOTE-171 did the
+expanded pair; NOTE-176 did the collapsed handle and the chat overlays.
 
 - **What NOTE-148 measured, re-measured, and partly corrected.** NOTE-148 recorded "both
   expanded handles stay on screen — 2 → 2, against iOS's 2 → 0". That count is real but it is a
@@ -1492,12 +1493,16 @@ handles out of the tree the way iOS does.
   alternative — declare Android's emergent hiding good enough and document the divergence — was
   rejected because it leaves the guarantee resting on a `Follower` flag two files away, and
   leaves the `expandedHandlesBuilder` path plainly wrong. The notifier's own doc comment now
-  names both readers, so the split-across-two-widgets shape can't quietly rot again.
+  names both readers — and, after NOTE-176, says the overlay consults it for *every* handle and
+  points at `_buildHandle` — so the split-across-two-widgets shape can't quietly rot again.
 
-- **What actually changes for a client that isn't using a custom builder**: the two default
-  handle widgets leave the widget tree instead of staying in it unpainted and unhittable. That
-  is a real change to what `find`/`findMobileExpandedDragHandles` report, and it is why this
-  wasn't folded into NOTE-148, but no pixel moves and no gesture that used to land stops landing.
+- **What actually changes for a client that isn't using a custom builder**: the default handle
+  widgets leave the widget tree instead of staying in it unpainted and unhittable — the two
+  expanded ones under NOTE-171, the collapsed one and the chat pair under NOTE-176. That is a
+  real change to what `find`/`findMobileExpandedDragHandles`/`findMobileCaretDragHandle` report,
+  and it is why this wasn't folded into NOTE-148, but no pixel moves and no gesture that used to
+  land stops landing. Nothing in either repo asserted on those finders under
+  `preventSelectionHandles()`, so no existing test needed touching.
 
 - **No new listener to balance, which is the whole answer to NOTE-142.** The subscriber is a
   `ValueListenableBuilder`, so the framework owns the `addListener`/`removeListener` pair and a
@@ -1523,28 +1528,85 @@ handles out of the tree the way iOS does.
 
 - **Genuine upstream candidate**, and the pair to NOTE-148: upstream's own two platforms
   disagreeing about upstream's own notifier, with upstream's own spellcheck package as the caller
-  that needs it. Not submitted — that is Don's call.
+  that needs it. Not submitted — that is Don's call. NOTE-176 is upstreamable on the same terms
+  and belongs in the same submission: it is the same defect on the remaining handle and in
+  upstream's own chat overlays.
 
-**Left as findings, not fixed here.** The Android *collapsed* handle has the identical shape:
-`_buildCollapsedHandle` reads only `shouldShowCollapsedHandle`, so the default handle is hidden
-only by the same unlinking (measured: hit-testable 1 → 0 under `preventSelectionHandles()`) and a
-client's `collapsedHandleBuilder` would keep its handle on screen. It is a different observable
-(`DocumentKeys.androidCaretHandle`, which iOS doesn't have as a separate widget) and the ticket
-named the expanded handles, so it stays a finding. `super_editor_spellcheck`'s Android and iOS
-popover tap handlers — the only callers of `preventSelectionHandles()` in the repo — have no test
-coverage of their own; its suite is 10 tests and none of them exercise those paths.
+**The collapsed handle, one ticket later (NOTE-176).** NOTE-171 left it as a finding on its own
+out-of-scope rule; NOTE-176 closed it, in the same shape and for the same reason.
+
+- **Re-measured against fork `main` at `e2354897`, both handles.** With the *default* collapsed
+  handle the reading is the one NOTE-171 predicted: widgets 1 → 1, hit-testable 1 → 0, caret
+  1 → 0, and `collapsedHandleFocalPoint.leader` goes `null` — hidden entirely by the `Follower`
+  unlinking, with `_buildCollapsedHandle` never reading the notifier. With a client
+  `collapsedHandleBuilder` painting a fixed-position box (deliberately not a `Follower`):
+  **1 widget and 1 hit-testable before *and* after `preventSelectionHandles()`**, and the
+  builder was not even re-invoked, because nothing it listened to had changed. That is the
+  defect: a handle a client asked to have hidden, on screen and draggable.
+
+- **What changed.** `_buildExpandedHandle` became `_buildHandle`, which takes the per-handle
+  visibility notifier and hands its builder *both* answers rather than one combined flag;
+  `_buildExpandedHandle` survives as a two-line wrapper that folds them, so the expanded call
+  sites are unchanged. The collapsed handle needs them apart because it spends them
+  differently: `shouldShowCollapsedHandle == false` is the ordinary end of a tap and still
+  *fades* over 150ms through the existing `AnimatedOpacity`, while a veto means there is no
+  handle at all and it leaves the tree outright — which is what the expanded handles and
+  `AndroidHandlesDocumentLayer` (it returns no layout data whatsoever) already do, and what
+  makes the guarantee the overlay's own rather than a `Follower` flag's two files away. A
+  client's `collapsedHandleBuilder` is still *called*, with `shouldShow: false`, exactly as
+  `expandedHandlesBuilder` is; honoring it is the builder's contract either way. After:
+  default 1 → 0 widgets / 1 → 0 hit-testable, custom builder 1 → 0 / 1 → 0, and
+  `allowSelectionHandles()` brings both back to 1 / 1.
+
+- **The chat overlays had NOTE-171's defect, unfixed, and are fixed here too.**
+  `super_message_android_overlays.dart` carries a third copy of the split. The
+  `areSelectionHandlesAllowed` listener in that file is not the one it looks like: it belongs to
+  `SuperMessageAndroidControlsDocumentLayerState`, i.e. the *layer*, and is the exact analogue of
+  `AndroidHandlesDocumentLayer._onSelectionHandlesAllowedChange` — all it can do is stop building
+  `Leader`s. `SuperMessageAndroidControlsOverlayManagerState._buildExpandedHandles`, which builds
+  the handle widgets, never read the notifier at all. Measured the same way: default handles
+  2 → 2 widgets, 2 → 0 hit-testable; a client `expandedHandlesBuilder` **2 → 2 and 2 → 2
+  hit-testable**. Same defect, so same fix — a `_buildExpandedHandle` helper of its own, with the
+  same `ValueListenableBuilder` shape. A `SuperMessage` has no collapsed handle to fix: its
+  controller has neither `shouldShowCollapsedHandle` nor `collapsedHandleBuilder`, and its
+  overlay's `Stack` has no collapsed-handle child. After: 2 → 0 / 2 → 0 in both cases.
+
+- **Nothing new in `dispose()`, on either file.**
+  `SuperMessageAndroidControlsOverlayManagerState` is the same shape as its editor twin — it
+  resolves the scope in `didChangeDependencies`, registers no manual listener on the controller,
+  and its `dispose()` only drops the composer's selection listener — so the
+  `ValueListenableBuilder` answer to NOTE-142 carries over unchanged.
+
+`super_editor_spellcheck`'s Android and iOS popover tap handlers — the only callers of
+`preventSelectionHandles()` in the repo — still have no test coverage of their own; its suite is
+10 tests and none of them exercise those paths. Nothing in the repo calls
+`SuperMessageAndroidControlsController.preventSelectionHandles()` at all; it is public API for a
+client to use, which is precisely why the custom-builder hole mattered there.
 
 Tests: `super_editor/test/super_editor/mobile/super_editor_android_overlay_controls_test.dart`,
-new group "selection handles allowed >" with four tests — hides the expanded handles with no
-other trigger, brings them back, hides handles built by a client's `expandedHandlesBuilder`, and
-doesn't need an extra frame when the caller also changes the selection — plus "layer lifecycle >
-keeps honoring preventSelectionHandles after the controls controller is replaced". A test-local
+group "selection handles allowed >" with eight tests — for each of the expanded pair and the
+collapsed handle: hides with no other trigger, brings it back, hides one built by a client's
+`expandedHandlesBuilder` / `collapsedHandleBuilder`, and doesn't need an extra frame when the
+caller also changes the selection — plus "layer lifecycle > keeps honoring
+preventSelectionHandles after the controls controller is replaced". A test-local
 `_pumpAppOwnedControls` helper hangs the scope above `SuperEditor` so a test drives the controller
 the layers actually resolve (`SuperEditorAndroidControlsScope.rootOf` takes the root-most scope),
 and the existing `_ThemedAppOwnedControlsScope` gained an `onControllerCreated` callback to match
-its iOS twin. All five fail against `lib/` reverted to `origin/main` (35 passing / 5 failing) and
-pass with the patch (40 / 0). Fork suite: 5697 passing, 7 skipped (5692 before these five).
-`super_editor_spellcheck`: 10 passing.
+its iOS twin. The four collapsed tests each end by cancelling the collapsed handle's auto-hide
+countdown: placing the caret starts it and only the ordinary `hideCollapsedHandle()` cancels it,
+which a prevented handle never reaches, so without that they end on a pending `Timer`.
+NOTE-176 adds `super_editor/test/chat/super_message/super_message_android_overlay_controls_test.dart`,
+the first overlay-controls test file on the chat side: the same three expanded-handle tests
+against a `SuperMessage` under an app-owned `SuperMessageAndroidControlsScope` (no fourth, since
+the one-frame question is the same `Element.markNeedsBuild` answer already pinned on the editor
+side).
+
+Sensitivity, with `lib/` reverted to `origin/main`: the four collapsed tests fail (40 passing /
+4 failing in that file — NOTE-171's four still pass, since that fix is on `main`) and all three
+chat tests fail (0 / 3). Fork suite on `e2354897`: **5702 passing, 7 skipped** before, **5709
+passing, 7 skipped** after — the seven new tests, no other file moved. (NOTE-171 recorded 5697;
+NOTE-165's two commits added the other five.) `super_editor_spellcheck`: 10 passing.
+`flutter analyze` adds no new issue on either edited file.
 
 ## App-specific (not for upstream)
 

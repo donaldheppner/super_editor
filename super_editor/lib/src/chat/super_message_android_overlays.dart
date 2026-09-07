@@ -313,32 +313,67 @@ class SuperMessageAndroidControlsOverlayManagerState extends State<SuperMessageA
     );
   }
 
+  /// Builds an expanded selection handle with [builder], rebuilding it whenever the answer to
+  /// "should an expanded handle be visible right now?" changes.
+  ///
+  /// Two of the controller's notifiers answer that question and both have to be consulted:
+  /// [SuperMessageAndroidControlsController.shouldShowExpandedHandles], which says whether an
+  /// expanded selection wants handles at all, and
+  /// [SuperMessageAndroidControlsController.areSelectionHandlesAllowed], which is how a client
+  /// suppresses every handle for something else.
+  ///
+  /// This method reads the second one as of MemNote NOTE-176, which is the same fix NOTE-171
+  /// made to `SuperEditorAndroidControlsOverlayManagerState`. Before that, this overlay
+  /// consulted only [SuperMessageAndroidControlsController.shouldShowExpandedHandles], and the
+  /// handles disappeared under `preventSelectionHandles()` only as a side effect:
+  /// [SuperMessageAndroidControlsDocumentLayerState] does read the notifier - it even listens
+  /// to it - but all it can do with it is stop building its `Leader`s, so the `Follower`s here
+  /// go unlinked and `showWhenUnlinked: false` stops painting and hit-testing them. That covers
+  /// the default handles, but it does not cover an
+  /// [SuperMessageAndroidControlsController.expandedHandlesBuilder] supplied by a client, which
+  /// was still called with `shouldShow: true` and is free to render handles that don't follow a
+  /// `Leader` at all. Measured before the fix: two handles, both hit-testable, before *and*
+  /// after `preventSelectionHandles()`.
+  ///
+  /// The subscriber is a [ValueListenableBuilder], so the framework owns the
+  /// `addListener`/`removeListener` pair and a controller swap does remove-old/add-new inside
+  /// `didUpdateWidget`. Nothing has to be added to [dispose].
+  Widget _buildExpandedHandle(Widget Function(BuildContext context, bool shouldShow) builder) {
+    return ValueListenableBuilder(
+      valueListenable: _controlsController!.areSelectionHandlesAllowed,
+      builder: (context, areSelectionHandlesAllowed, child) {
+        return ValueListenableBuilder(
+          valueListenable: _controlsController!.shouldShowExpandedHandles,
+          builder: (context, shouldShowExpandedHandles, child) {
+            return builder(context, areSelectionHandlesAllowed && shouldShowExpandedHandles);
+          },
+        );
+      },
+    );
+  }
+
   List<Widget> _buildExpandedHandles() {
     if (_controlsController!.expandedHandlesBuilder != null) {
       return [
-        ValueListenableBuilder(
-          valueListenable: _controlsController!.shouldShowExpandedHandles,
-          builder: (context, shouldShow, child) {
-            return _controlsController!.expandedHandlesBuilder!(
-              context,
-              upstreamHandleKey: DocumentKeys.upstreamHandle,
-              upstreamFocalPoint: _controlsController!.upstreamHandleFocalPoint,
-              upstreamGestureDelegate: _upstreamHandleGesturesDelegate,
-              downstreamHandleKey: DocumentKeys.downstreamHandle,
-              downstreamFocalPoint: _controlsController!.downstreamHandleFocalPoint,
-              downstreamGestureDelegate: _downstreamHandleGesturesDelegate,
-              shouldShow: shouldShow,
-            );
-          },
-        )
+        _buildExpandedHandle((context, shouldShow) {
+          return _controlsController!.expandedHandlesBuilder!(
+            context,
+            upstreamHandleKey: DocumentKeys.upstreamHandle,
+            upstreamFocalPoint: _controlsController!.upstreamHandleFocalPoint,
+            upstreamGestureDelegate: _upstreamHandleGesturesDelegate,
+            downstreamHandleKey: DocumentKeys.downstreamHandle,
+            downstreamFocalPoint: _controlsController!.downstreamHandleFocalPoint,
+            downstreamGestureDelegate: _downstreamHandleGesturesDelegate,
+            shouldShow: shouldShow,
+          );
+        })
       ];
     }
 
     final gestureSettings = MediaQuery.maybeOf(context)?.gestureSettings;
     return [
-      ValueListenableBuilder(
-        valueListenable: _controlsController!.shouldShowExpandedHandles,
-        builder: (context, shouldShow, child) {
+      _buildExpandedHandle(
+        (context, shouldShow) {
           if (!shouldShow) {
             return const SizedBox();
           }
@@ -382,9 +417,8 @@ class SuperMessageAndroidControlsOverlayManagerState extends State<SuperMessageA
           );
         },
       ),
-      ValueListenableBuilder(
-        valueListenable: _controlsController!.shouldShowExpandedHandles,
-        builder: (context, shouldShow, child) {
+      _buildExpandedHandle(
+        (context, shouldShow) {
           if (!shouldShow) {
             return const SizedBox();
           }

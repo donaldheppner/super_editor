@@ -326,11 +326,11 @@ class SuperEditorAndroidControlsController {
   /// {@endtemplate}
   ///
   /// Two widgets read this, because Android splits a handle between them: the caret and the
-  /// expanded handles' `Leader`s live in `AndroidHandlesDocumentLayer`, and the handle widgets
-  /// themselves live in [SuperEditorAndroidControlsOverlayManagerState]. Both consult this
-  /// notifier, so `false` means no caret and no handle - see
-  /// `SuperEditorAndroidControlsOverlayManagerState._buildExpandedHandle` for why the overlay
-  /// can't simply rely on the layer dropping its `Leader`s (MemNote NOTE-171).
+  /// collapsed and expanded handles' `Leader`s live in `AndroidHandlesDocumentLayer`, and the
+  /// handle widgets themselves live in [SuperEditorAndroidControlsOverlayManagerState]. Both
+  /// consult this notifier, for every handle, so `false` means no caret and no handle - see
+  /// `SuperEditorAndroidControlsOverlayManagerState._buildHandle` for why the overlay can't
+  /// simply rely on the layer dropping its `Leader`s (MemNote NOTE-171, NOTE-176).
   ValueListenable<bool> get areSelectionHandlesAllowed => _areSelectionHandlesAllowed;
   final _areSelectionHandlesAllowed = ValueNotifier<bool>(true);
 
@@ -1899,9 +1899,9 @@ class SuperEditorAndroidControlsOverlayManagerState extends State<SuperEditorAnd
   }
 
   Widget _buildCollapsedHandle() {
-    return ValueListenableBuilder(
-      valueListenable: _controlsController!.shouldShowCollapsedHandle,
-      builder: (context, shouldShow, child) {
+    return _buildHandle(
+      _controlsController!.shouldShowCollapsedHandle,
+      (context, areSelectionHandlesAllowed, isCollapsedHandleVisible) {
         final selection = widget.selection.value;
         if (selection == null || !selection.isCollapsed) {
           // When the user double taps we first place a collapsed selection
@@ -1909,6 +1909,8 @@ class SuperEditorAndroidControlsOverlayManagerState extends State<SuperEditorAnd
           // Return a SizedBox to avoid flashing the collapsed drag handle.
           return const SizedBox();
         }
+
+        final shouldShow = areSelectionHandlesAllowed && isCollapsedHandleVisible;
 
         if (_controlsController!.collapsedHandleBuilder != null) {
           return _controlsController!.collapsedHandleBuilder!(
@@ -1918,6 +1920,14 @@ class SuperEditorAndroidControlsOverlayManagerState extends State<SuperEditorAnd
             shouldShow: shouldShow,
             gestureDelegate: _collapsedHandleGestureDelegate,
           );
+        }
+
+        if (!areSelectionHandlesAllowed) {
+          // A client vetoed every selection handle, so there's no handle to show and none to
+          // fade out either - drop it, the same answer the expanded handles give and the same
+          // one AndroidHandlesDocumentLayer gives when it returns no layout data at all. The
+          // AnimatedOpacity below is for the ordinary hide, which fades; a veto is immediate.
+          return const SizedBox();
         }
 
         // Note: If we pass this widget as the `child` property, it causes repeated starts and stops
@@ -1976,38 +1986,60 @@ class SuperEditorAndroidControlsOverlayManagerState extends State<SuperEditorAnd
     );
   }
 
-  /// Builds an expanded selection handle with [builder], rebuilding it whenever the answer to
-  /// "should an expanded handle be visible right now?" changes.
+  /// Builds a selection handle with [builder], rebuilding it whenever the answer to "should
+  /// this handle be visible right now?" changes.
   ///
-  /// Two of the controller's notifiers answer that question and both have to be consulted:
-  /// [SuperEditorAndroidControlsController.shouldShowExpandedHandles], which says whether an
-  /// expanded selection wants handles at all, and
-  /// [SuperEditorAndroidControlsController.areSelectionHandlesAllowed], which is how a client
-  /// suppresses every handle for something else - `super_editor_spellcheck` calls
-  /// `preventSelectionHandles()` before expanding the selection to the misspelled word, so its
-  /// suggestion popover isn't competing with drag handles.
+  /// Two of the controller's notifiers answer that question and both have to be consulted.
+  /// [handleVisibility] is the one for this particular handle -
+  /// [SuperEditorAndroidControlsController.shouldShowCollapsedHandle] for the collapsed handle,
+  /// [SuperEditorAndroidControlsController.shouldShowExpandedHandles] for the expanded pair -
+  /// and [SuperEditorAndroidControlsController.areSelectionHandlesAllowed] is the client-wide
+  /// veto: `super_editor_spellcheck` calls `preventSelectionHandles()` before selecting the
+  /// misspelled word, so its suggestion popover isn't competing with drag handles.
   ///
-  /// This method reads the second one as of MemNote NOTE-171. Before that, this overlay
-  /// consulted only [SuperEditorAndroidControlsController.shouldShowExpandedHandles], and the
-  /// handles disappeared under `preventSelectionHandles()` only as a side effect: the caret
-  /// layer stops building its `Leader`s, so the `Follower`s here go unlinked and
-  /// `showWhenUnlinked: false` stops painting and hit-testing them. That covers the default
-  /// handles, but it does not cover an [expandedHandlesBuilder] supplied by a client, which
-  /// was still called with `shouldShow: true` and is free to render handles that don't follow
-  /// a `Leader` at all. It also left iOS and Android disagreeing about the same notifier: the
-  /// iOS layer builds its handles itself, so it drops them from the tree (MemNote NOTE-148),
-  /// where Android kept two invisible ones. Now both platforms take "prevent selection
-  /// handles" to mean the handles are gone.
-  Widget _buildExpandedHandle(Widget Function(BuildContext context, bool shouldShow) builder) {
+  /// [builder] is handed both, rather than one combined flag, because the two handles spend
+  /// them differently. The expanded handles fold them together. The collapsed handle *fades*
+  /// out over 150ms when it's merely hidden, and that fade is the ordinary end of a tap, so it
+  /// has to keep it - but a veto means there is no handle at all, so it leaves the tree
+  /// outright, which is what the expanded handles and `AndroidHandlesDocumentLayer` (it returns
+  /// no layout data whatsoever) already do.
+  ///
+  /// This method reads [SuperEditorAndroidControlsController.areSelectionHandlesAllowed] as of
+  /// MemNote NOTE-171 for the expanded handles, and NOTE-176 for the collapsed handle. Before
+  /// that, this overlay consulted only the per-handle notifier, and the handles disappeared
+  /// under `preventSelectionHandles()` only as a side effect: the caret layer stops building
+  /// its `Leader`s, so the `Follower`s here go unlinked and `showWhenUnlinked: false` stops
+  /// painting and hit-testing them. That covers the default handles, but it does not cover an
+  /// [expandedHandlesBuilder] or a [collapsedHandleBuilder] supplied by a client, which were
+  /// still called with `shouldShow: true` and are free to render handles that don't follow a
+  /// `Leader` at all. It also left iOS and Android disagreeing about the same notifier: the iOS
+  /// layer builds its handles itself, so it drops them from the tree (MemNote NOTE-148), where
+  /// Android kept invisible ones. Now both platforms take "prevent selection handles" to mean
+  /// the handles are gone.
+  Widget _buildHandle(
+    ValueListenable<bool> handleVisibility,
+    Widget Function(BuildContext context, bool areSelectionHandlesAllowed, bool isHandleVisible) builder,
+  ) {
     return ValueListenableBuilder(
       valueListenable: _controlsController!.areSelectionHandlesAllowed,
       builder: (context, areSelectionHandlesAllowed, child) {
         return ValueListenableBuilder(
-          valueListenable: _controlsController!.shouldShowExpandedHandles,
-          builder: (context, shouldShowExpandedHandles, child) {
-            return builder(context, areSelectionHandlesAllowed && shouldShowExpandedHandles);
+          valueListenable: handleVisibility,
+          builder: (context, isHandleVisible, child) {
+            return builder(context, areSelectionHandlesAllowed, isHandleVisible);
           },
         );
+      },
+    );
+  }
+
+  /// Builds an expanded selection handle with [builder], folding both of [_buildHandle]'s
+  /// answers into the single "should show" that the expanded handles use.
+  Widget _buildExpandedHandle(Widget Function(BuildContext context, bool shouldShow) builder) {
+    return _buildHandle(
+      _controlsController!.shouldShowExpandedHandles,
+      (context, areSelectionHandlesAllowed, shouldShowExpandedHandles) {
+        return builder(context, areSelectionHandlesAllowed && shouldShowExpandedHandles);
       },
     );
   }

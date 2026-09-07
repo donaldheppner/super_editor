@@ -995,6 +995,141 @@ void main() {
         await tester.pump();
         expect(tester.binding.hasScheduledFrame, isFalse);
       });
+
+      // The collapsed handle had the identical split until MemNote NOTE-176: _buildCollapsedHandle
+      // read only shouldShowCollapsedHandle, so the default handle was hidden by the same unlinking
+      // (measured on unpatched code: 1 widget, hit-testable 1 -> 0) and a client's
+      // collapsedHandleBuilder was still called with shouldShow: true, leaving its handle visible
+      // and draggable (measured: 1 widget, hit-testable 1 -> 1).
+
+      testWidgetsOnAndroid("hides the collapsed handle with no other trigger", (tester) async {
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.placeCaretInParagraph("1", 0);
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsOneWidget);
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsNothing);
+
+        // Placing the caret started the collapsed handle's auto-hide countdown, and only the
+        // ordinary hideCollapsedHandle() cancels it - which this test never reaches. Cancel it
+        // so the test doesn't end on a pending Timer.
+        controlsController.cancelCollapsedHandleAutoHideCountdown();
+      });
+
+      testWidgetsOnAndroid("brings the collapsed handle back with no other trigger", (tester) async {
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.placeCaretInParagraph("1", 0);
+        await tester.pump();
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsNothing);
+
+        controlsController.allowSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsOneWidget);
+
+        controlsController.cancelCollapsedHandleAutoHideCountdown();
+      });
+
+      testWidgetsOnAndroid("hides a handle built by a client's collapsedHandleBuilder", (tester) async {
+        // The case the Leader doesn't cover, one handle over from the expandedHandlesBuilder test
+        // above. A client that supplies its own collapsed handle is handed the focal point but is
+        // under no obligation to follow it.
+        final controlsController = SuperEditorAndroidControlsController(
+          collapsedHandleBuilder: (
+            context, {
+            required handleKey,
+            required focalPoint,
+            required gestureDelegate,
+            required shouldShow,
+          }) {
+            if (!shouldShow) {
+              return const SizedBox();
+            }
+
+            // Deliberately not a Follower: a handle painted at a fixed spot, which is what makes
+            // this test see the notifier rather than the Leader.
+            return Stack(
+              children: [
+                Positioned(
+                  left: 10,
+                  top: 10,
+                  child: SizedBox(
+                    key: handleKey,
+                    width: 20,
+                    height: 20,
+                    child: const ColoredBox(color: Color(0xFFFF0000)),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+        addTearDown(controlsController.dispose);
+        await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.placeCaretInParagraph("1", 0);
+        await tester.pump();
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsOneWidget);
+        expect(SuperEditorInspector.findMobileCaretDragHandle().hitTestable(), findsOneWidget);
+
+        controlsController.preventSelectionHandles();
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsNothing);
+
+        controlsController.cancelCollapsedHandleAutoHideCountdown();
+      });
+
+      testWidgetsOnAndroid("doesn't need an extra frame to hide the collapsed handle when the caller also changes "
+          "the selection", (tester) async {
+        // The collapsed twin of the test above: preventSelectionHandles() followed immediately by
+        // a selection change must still settle in one frame, because a ValueListenableBuilder's
+        // rebuild is Element.markNeedsBuild, which returns early when the element is already dirty.
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        final editor = await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.placeCaretInParagraph("1", 0);
+        await tester.pumpAndSettle();
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsOneWidget);
+
+        controlsController.preventSelectionHandles();
+        editor.execute([
+          const ChangeSelectionRequest(
+            DocumentSelection.collapsed(
+              position: DocumentPosition(nodeId: "1", nodePosition: TextNodePosition(offset: 5)),
+            ),
+            SelectionChangeType.placeCaret,
+            SelectionReason.userInteraction,
+          ),
+        ]);
+
+        // One frame settles both.
+        await tester.pump();
+
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsNothing);
+        expect(SuperEditorInspector.findMobileCaret(), findsNothing);
+
+        // As with the expanded handles, that frame leaves one more scheduled - a repaint from
+        // RenderFollower.detach() reacting to the handle leaving the tree, not a build the effect
+        // was waiting on. One more pump and the editor is quiet, which rules out a rebuild loop.
+        await tester.pump();
+        expect(tester.binding.hasScheduledFrame, isFalse);
+
+        controlsController.cancelCollapsedHandleAutoHideCountdown();
+      });
     });
 
     group("layer lifecycle >", () {
