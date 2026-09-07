@@ -910,7 +910,7 @@ restoring the file and re-running: 4 passing / 6 failing before, 10 passing afte
 `flutter analyze` in the clone: 12 issues before and after, all pre-existing
 `deprecated_member_use` infos.
 
-### `flutter pub get` in the examples and clones must not dirty the tree (MemNote NOTE-144, NOTE-169)
+### `flutter pub get` in the examples and clones must not dirty the tree (MemNote NOTE-144, NOTE-169, NOTE-174)
 
 `.gitattributes` (new, repo root), plus `pubspec.lock` added to
 `super_editor_clipboard/example/.gitignore`, `super_editor_spellcheck/example/.gitignore`,
@@ -1000,7 +1000,7 @@ untracked the same way, with the same copied comment: `super_clones/bear/.gitign
 `super_clones/slack/.gitignore`, `super_editor/example_chat/.gitignore` and
 `super_editor/example_perf/.gitignore`.
 
-The other three are not the same call, which is why this wasn't done in bulk:
+The other three were not the same call at the time, which is why this wasn't done in bulk:
 
 - `super_clones/medium` and `super_clones/obsidian` don't depend on `super_editor` at all — no
   path dependency, no override, nothing but ordinary pub.dev packages (`macos_window_utils`,
@@ -1009,23 +1009,50 @@ The other three are not the same call, which is why this wasn't done in bulk:
   own changes would ever touch these two locks. Left tracked — this is just an ordinary Flutter
   app lockfile, which upstream's own stated policy says to commit.
 - `super_clones/ios_messenger` does depend on `super_editor` via path, but its own `pubspec.yaml`
-  still pins `super_keyboard: ^0.3.0` while the fork's `super_editor` has required
-  `super_keyboard ^0.4.0` for several versions now; `flutter pub get` fails outright with a
-  version-solving error instead of re-resolving. The committed lock is already stale on top of
-  that — it pins `super_editor` at `0.3.0-dev.40`, a dozen-odd fork versions behind today's
-  `dev.52` — so it was never being kept current by anyone running `pub get` here. Left tracked
-  as-is: untracking a lockfile that can't currently be regenerated wouldn't fix the underlying
-  constraint bug, and the acceptance check (`pub get` leaves the tree clean) holds trivially
-  either way, since the failed resolve errors out before writing anything. The stale
-  `super_keyboard` constraint is a separate, pre-existing bug, not fixed here (see MemNote
-  NOTE-169's findings).
+  still pinned `super_keyboard: ^0.3.0` while the fork's `super_editor` has required
+  `super_keyboard ^0.4.0` for several versions now; `flutter pub get` failed outright with a
+  version-solving error instead of re-resolving. The committed lock was already stale on top of
+  that — it pinned `super_editor` at `0.3.0-dev.40`, a dozen-odd fork versions behind `dev.52` at
+  the time — so it was never being kept current by anyone running `pub get` here. Left tracked
+  as-is at the time: untracking a lockfile that couldn't be regenerated wouldn't have fixed the
+  underlying constraint bug, and the acceptance check (`pub get` leaves the tree clean) held
+  trivially either way, since the failed resolve errored out before writing anything. The stale
+  `super_keyboard` constraint was flagged as a separate, pre-existing bug, not fixed by NOTE-169
+  (see its findings) — MemNote NOTE-174 is that follow-up.
 
-Verified from this checkout: `flutter pub get` in all nine apps, `git diff --ignore-cr-at-eol
---stat` to separate the churn classes, then (after untracking the six and re-running
-`flutter pub get` in each) `git status --short` inside the submodule — empty. `medium` and
-`obsidian` were untouched throughout; `ios_messenger`'s `pub get` fails before writing
+Verified from this checkout, at the time: `flutter pub get` in all nine apps, `git diff
+--ignore-cr-at-eol --stat` to separate the churn classes, then (after untracking the six and
+re-running `flutter pub get` in each) `git status --short` inside the submodule — empty. `medium`
+and `obsidian` were untouched throughout; `ios_messenger`'s `pub get` failed before writing
 `pubspec.lock`, so it was never dirty to begin with. No Dart code changed, so the fork's test
-suite was not re-run for this ticket.
+suite was not re-run for NOTE-169.
+
+**NOTE-174 follow-up: `ios_messenger`'s stale constraint, fixed.** Checked upstream
+(`Flutter-Bounty-Hunters/super_editor` `main`) first — it pins the identical
+`super_keyboard: ^0.3.0` in its own copy of the clone, so there was no upstream bump to
+cherry-pick; the fix below is this fork's own. `super_clones/ios_messenger/pubspec.yaml` now
+requires `super_keyboard: ^0.4.0`, matching `super_editor/pubspec.yaml`. `flutter pub get` now
+succeeds and pulls in the identical three-driver churn described above, all in one resolve because
+the committed lock was so far behind: `super_editor` `0.3.0-dev.40` → `dev.52` (the path
+dependency), `attributed_text` `0.4.5` → `0.4.7` and `super_text_layout` `0.1.19` → `0.1.21`
+(pub.dev), and `test`/`test_api`/`test_core` moving with the SDK's own `flutter_test` constraint —
+the same cluster that put `bear`, `google_docs`, `quill`, `slack`, `example_chat` and
+`example_perf` in the untracked bucket, for the same reason: `ios_messenger` depends on
+`super_editor` via the same path dependency. It now joins those six — untracked with the same
+copied comment, in `super_clones/ios_messenger/.gitignore` — rather than staying in the
+`medium`/`obsidian` bucket, which has no such mechanism.
+
+Verified for NOTE-174: `flutter pub get` in `super_clones/ios_messenger` reproduced the
+version-solving error against the unmodified `^0.3.0` constraint; after the bump, two consecutive
+`flutter pub get` runs produced a byte-identical `pubspec.lock`, and `git status --short` inside
+the submodule showed only the intended `pubspec.yaml`, `.gitignore` and (now-untracked)
+`pubspec.lock` changes both times — nothing else in the submodule was dirtied. `flutter analyze`
+in the clone: one pre-existing `unused_field` warning in
+`lib/conversation/conversation_screen.dart`, unrelated to this change (no Dart file touched).
+`flutter build apk --debug` in the clone succeeded (Android is the only platform this Windows
+machine can build for `ios_messenger`, which carries only `android/` and `ios/` platform
+directories). The fork's full test suite was not re-run for this ticket either — no `lib/` code
+changed, same as NOTE-169.
 
 ### `FloatingCursorController.dispose()`: release the fourth notifier too (MemNote NOTE-147)
 

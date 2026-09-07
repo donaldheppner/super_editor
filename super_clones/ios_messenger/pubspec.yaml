@@ -14,7 +14,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   super_editor:
     path: ../../super_editor/
-  super_keyboard: ^0.3.0
+  super_keyboard: ^0.4.0
 
 dev_dependencies:
   flutter_lints: ^5.0.0
