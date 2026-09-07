@@ -1455,7 +1455,7 @@ would rebuild the presenter on every build. Sensitivity: the first test verified
 five platform variants before the fix, passing after. Fork suite: 5712 passing, 7 skipped (5702
 before these ten variants, at fork `main` `3034ff3c`).
 
-### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded and collapsed handles (MemNote NOTE-171, NOTE-176)
+### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded and collapsed handles (MemNote NOTE-171, NOTE-176, NOTE-181)
 
 `super_editor/lib/src/default_editor/document_gestures_touch_android.dart`,
 `super_editor/lib/src/chat/super_message_android_overlays.dart`
@@ -1577,9 +1577,16 @@ out-of-scope rule; NOTE-176 closed it, in the same shape and for the same reason
   and its `dispose()` only drops the composer's selection listener — so the
   `ValueListenableBuilder` answer to NOTE-142 carries over unchanged.
 
-`super_editor_spellcheck`'s Android and iOS popover tap handlers — the only callers of
-`preventSelectionHandles()` in the repo — still have no test coverage of their own; its suite is
-10 tests and none of them exercise those paths. Nothing in the repo calls
+**NOTE-181 covers the caller.** `super_editor_spellcheck`'s Android and iOS popover tap handlers
+are the only callers of `preventSelectionHandles()` in the repo, and the reason the guarantee
+exists at all — but through NOTE-176 they had no test of their own, so all of the above was
+pinned only by editor-side tests that drive the controller directly. NOTE-181 adds
+`super_editor_spellcheck/test/spellcheck_mobile_popover_handles_test.dart`, seven tests under
+"mobile suggestion popover > selection handles >": on each of Android and iOS, *hides every
+handle while the popover is up*, *allows handles again when the popover is dismissed* and *allows
+handles again when a suggestion is chosen*, plus an Android-only *keeps the caret handle for the
+300ms before the popover appears*. It adds no `lib/` change: it is a test of code that already
+worked. Nothing in the repo calls
 `SuperMessageAndroidControlsController.preventSelectionHandles()` at all; it is public API for a
 client to use, which is precisely why the custom-builder hole mattered there.
 
@@ -1607,6 +1614,67 @@ chat tests fail (0 / 3). Fork suite on `e2354897`: **5702 passing, 7 skipped** b
 passing, 7 skipped** after — the seven new tests, no other file moved. (NOTE-171 recorded 5697;
 NOTE-165's two commits added the other five.) `super_editor_spellcheck`: 10 passing.
 `flutter analyze` adds no new issue on either edited file.
+
+Three things about NOTE-181's test file are load-bearing rather than stylistic, and each cost a
+measurement:
+
+- **Every test places an ordinary caret on a correctly-spelled word first.** Not scene-setting:
+  the tap handler halts SuperEditor's own tap handling, so on a cold editor nothing has asked for
+  a handle, `shouldShowCollapsedHandle` is `false`, and the handle finders return nothing whether
+  or not the veto fires. Measured on the first draft: with `preventSelectionHandles()` commented
+  out, `findMobileCaretDragHandle()` and `findMobileExpandedDragHandles()` were still empty and
+  only the notifier's value moved — a vacuous assertion. With a caret placed first, the same
+  mutation leaves **2 expanded handles** in the tree on both platforms. The handle a spellcheck
+  tap has to suppress is the one the user's *previous* interaction left behind, which is also the
+  only sequence a real user can produce.
+- **The plugin gets the same controller instance the scope hangs above `SuperEditor`.** That is
+  `_pumpAppOwnedControls`' shape, for `_pumpSpellcheckEditor`'s reason: the suggestion toolbar
+  reaches its controller through `SuperEditorAndroidControlsScope.rootOf` /
+  `SuperEditorIosControlsScope.rootOf`, which take the root-most scope, and the plugin's
+  constructor asserts a controller is supplied on each mobile platform.
+- **Dismissal is a different gesture per platform.** Android hangs a `ModalBarrier` over the
+  document while the popover is up, so "tap elsewhere" is a tap on that barrier, which runs the
+  tap handler's `onDismiss`; iOS has no barrier, so it is an ordinary tap on a correctly-spelled
+  word, which reaches `onTap` and finds no suggestions there. The suggestion-chosen path is a
+  third route on both: it never reaches the tap handler at all, and it is the toolbar's own
+  document listener in `spelling_error_suggestion_overlay.dart` that allows handles again.
+
+NOTE-181's own sensitivity, one call commented out at a time (line numbers at fork `e5fa2c7a`),
+all seven tests green before each:
+
+| Mutation | Tests that fail |
+|---|---|
+| `spelling_and_grammar_plugin.dart:946`, Android `preventSelectionHandles()` | all four Android tests |
+| `spelling_and_grammar_plugin.dart:1004`, Android `_hideSpellCheckerPopover()`'s `allowSelectionHandles()` | Android *allows handles again when the popover is dismissed* |
+| `spelling_error_suggestion_overlay.dart:811`, Android toolbar's `allowSelectionHandles()` | Android *allows handles again when a suggestion is chosen* |
+| `spelling_and_grammar_plugin.dart:834`, iOS `preventSelectionHandles()` | all three iOS tests |
+| `spelling_and_grammar_plugin.dart:883`, iOS `_hideSpellCheckerPopover()`'s `allowSelectionHandles()` | iOS *allows handles again when the popover is dismissed* |
+| `spelling_error_suggestion_overlay.dart:923`, iOS toolbar's `allowSelectionHandles()` | iOS *allows handles again when a suggestion is chosen* |
+| `spelling_and_grammar_plugin.dart:937`, Android `onTap`'s pre-timer `allowSelectionHandles()` | **none** |
+
+Both prevent mutations are caught by a handle finder rather than by the notifier — the tests
+assert the visible consequence before the mechanism, so a regression reads as "a handle is on
+screen", which is the thing a user would report.
+
+That last row is a genuine gap and not a fixable one from the test side. Android's `onTap` calls
+`allowSelectionHandles()` *before* its 300ms timer, so the caret is visible at the tap position
+until the selection expands to the whole word; the Android-only fourth test pins that window (it
+has to tap by hand, because `tapInParagraph`'s trailing `pumpAndSettle()` runs the timer). But the
+call is only observable when handles were *already* prevented when the tap arrived, and no
+reachable sequence produces that: the `ModalBarrier` means a tap while one popover is up dismisses
+it — running `_hideSpellCheckerPopover()`, which allows handles — rather than landing on a second
+mis-spelled word. It is defensive code, and the fourth test earns its place by pinning the
+deliberate caret-then-popover ordering instead.
+
+NOTE-181 touches only `super_editor_spellcheck/test/`, so the `super_editor` suite is unmoved:
+**5719 passing, 7 skipped** at fork `e5fa2c7a` and the same afterwards. (5719, not the 5709 the
+paragraph above recorded on `e2354897` — the ten between them arrived with NOTE-177's clone
+tests.) `super_editor_spellcheck`: **10 passing before, 17 after**. `flutter analyze` in that
+package still reports exactly the one pre-existing `unnecessary_import` info in
+`spellcheck_timing_test.dart`, and the new file is `dart format --line-length=120` clean.
+NOTE-181 is the most upstreamable of this set — it is a pure test addition against upstream's own
+`super_editor_spellcheck`, with no fork `lib/` change under it — but it has not been submitted;
+that is Don's call.
 
 ## App-specific (not for upstream)
 
