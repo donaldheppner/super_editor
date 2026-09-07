@@ -19,11 +19,15 @@ jobs:
       - uses: actions/checkout@v3
 
       # Setup Flutter environment
+      #
+      # MemNote fork (NOTE-177): no `architecture: x64` here. macos-latest is arm64, so that
+      # line installed a Rosetta x64 SDK and ran the whole suite emulated - this was the
+      # longest job in the workflow by a factor of four. The ubuntu golden jobs below keep
+      # their x64 line because x64 is native there and the goldens are byte-compared.
       - uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
 
       # Download all the packages that the app uses
       - run: flutter pub get

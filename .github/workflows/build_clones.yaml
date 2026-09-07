@@ -7,6 +7,13 @@ on: [pull_request]
 env:
   FLUTTER_VERSION: "3.41.4"
 
+# MemNote fork (NOTE-177): the clones that have a `test/` directory run it here, as a
+# `flutter test` step in their own build job - the SDK and `pub get` are already paid for,
+# so the tests cost seconds. Today that is obsidian (1 test) and quill (10). The other
+# four clones in this workflow - bear, google_docs, medium, slack - have no tests at all,
+# so their job proves only that they still compile. If you add a `test/` directory to one
+# of them, add the step here too; nothing else in this repo runs a clone's tests.
+
 jobs:
   build_bear:
     runs-on: macos-latest
@@ -93,6 +100,9 @@ jobs:
       # Download all the packages that the app uses
       - run: flutter pub get
 
+      # Run the clone's tests (MemNote NOTE-177)
+      - run: flutter test
+
       # Build the clone
       - run: flutter build macos --debug
 
@@ -136,6 +146,9 @@ jobs:
 
       # Download all the packages that the app uses
       - run: flutter pub get
+
+      # Run the clone's tests (MemNote NOTE-177)
+      - run: flutter test
 
       # Build the clone
       - run: flutter build macos --debug

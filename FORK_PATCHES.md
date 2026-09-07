@@ -44,7 +44,7 @@ Two more things a fresh clone needs:
   fork carries no patch to any of those three — the day it does, uncomment the
   `dependency_overrides` block already sitting in their pubspecs.
 
-### CI: the fork pins Flutter, and a green run is the bar (NOTE-165)
+### CI: the fork pins Flutter, and a green run is the bar (NOTE-165, NOTE-177)
 
 Upstream's workflows install the `master` channel. This fork pins the SDK
 instead — `FLUTTER_VERSION` at the top of `.github/workflows/pr_validation.yaml`
@@ -92,8 +92,30 @@ maintenance the next Flutter bump inherits:
   now, so that line installed a Rosetta x64 SDK; 3.41.4 then asked `xcodebuild`
   for a `{ platform:macOS, arch:arm64 }` destination the Rosetta'd toolchain does
   not offer, and five of the six clone builds died on it — including
-  `build_obsidian`, which had been passing. `test_mac` still carries the line and
-  still passes, so it was left alone.
+  `build_obsidian`, which had been passing. NOTE-165 left `test_mac`'s copy of
+  the line alone because that job was green; **NOTE-177 removed it too.** Green
+  is not the same as fast: `macos-latest` is arm64, so the Rosetta x64 SDK ran
+  all 5,702 tests emulated, and `test_mac` took **22m55s** against 4m48s for
+  `test_linux` and 10m18s for `test_windows` — the long pole of every fork PR by
+  a factor of four. Native arm64 runs the same 5,702 tests (7 skipped, as
+  before) in **12m16s**, and the `flutter test` step alone went 21m01s → 10m37s:
+  Rosetta was costing exactly half. The three golden jobs still carry
+  `architecture: x64`, and should — they run on `ubuntu-latest`, where x64 *is*
+  the native architecture, and their images are byte-compared.
+
+**Nothing ran a clone's tests until NOTE-177.** `build_clones.yaml` only built
+the six clones it knows about, so obsidian's `tabbed_editor_test.dart` (written
+in NOTE-165, replacing the unedited `flutter create` counter test that could
+never have passed) and quill's `toolbar_indent_test.dart` (NOTE-146) were run by
+a human or by nobody. Both now run as a `flutter test` step inside the clone's
+existing `build_*` job — 11s for obsidian and 17s for quill, because the SDK
+install and `pub get` are already paid for there and no second macOS runner has
+to be queued. The other four clones in that workflow — bear, google_docs,
+medium, slack — have no tests at all, so their jobs still prove only that the
+clone compiles; the comment at the top of `build_clones.yaml` says which is
+which, so nobody reads six green checks as six tested clones.
+(`super_clones/ios_messenger` is in neither list: no tests, and no build job
+either.)
 
 Two workflows are expected not to run. `Cherry pick to stable` is gated to the
 upstream repository — this fork keeps no maintained `stable` branch, so it went
