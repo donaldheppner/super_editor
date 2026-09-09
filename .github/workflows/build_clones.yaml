@@ -5,7 +5,7 @@ on: [pull_request]
 # "master" channel that upstream uses. See the CI section of FORK_PATCHES.md for why.
 # Bump FLUTTER_VERSION here and in pr_validation.yaml whenever MemNote's toolchain moves.
 env:
-  FLUTTER_VERSION: "3.41.4"
+  FLUTTER_VERSION: "3.47.2"
 
 # MemNote fork (NOTE-177): the clones that have a `test/` directory run it here, as a
 # `flutter test` step in their own build job - the SDK and `pub get` are already paid for,
