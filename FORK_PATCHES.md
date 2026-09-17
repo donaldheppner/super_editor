@@ -1702,21 +1702,99 @@ all seven tests green before each:
 | `spelling_and_grammar_plugin.dart:834`, iOS `preventSelectionHandles()` | all three iOS tests |
 | `spelling_and_grammar_plugin.dart:883`, iOS `_hideSpellCheckerPopover()`'s `allowSelectionHandles()` | iOS *allows handles again when the popover is dismissed* |
 | `spelling_error_suggestion_overlay.dart:923`, iOS toolbar's `allowSelectionHandles()` | iOS *allows handles again when a suggestion is chosen* |
-| `spelling_and_grammar_plugin.dart:937`, Android `onTap`'s pre-timer `allowSelectionHandles()` | **none** |
+| `spelling_and_grammar_plugin.dart:937`, Android `onTap`'s pre-timer `allowSelectionHandles()` | Android *recovers handles on the next tap when the popover left them prevented* (NOTE-182; **none** as NOTE-181 shipped) |
 
 Both prevent mutations are caught by a handle finder rather than by the notifier — the tests
 assert the visible consequence before the mechanism, so a regression reads as "a handle is on
 screen", which is the thing a user would report.
 
-That last row is a genuine gap and not a fixable one from the test side. Android's `onTap` calls
-`allowSelectionHandles()` *before* its 300ms timer, so the caret is visible at the tap position
-until the selection expands to the whole word; the Android-only fourth test pins that window (it
-has to tap by hand, because `tapInParagraph`'s trailing `pumpAndSettle()` runs the timer). But the
-call is only observable when handles were *already* prevented when the tap arrived, and no
-reachable sequence produces that: the `ModalBarrier` means a tap while one popover is up dismisses
-it — running `_hideSpellCheckerPopover()`, which allows handles — rather than landing on a second
-mis-spelled word. It is defensive code, and the fourth test earns its place by pinning the
-deliberate caret-then-popover ordering instead.
+That last row was a genuine gap, and **NOTE-182 closed it by finding the sequence NOTE-181 could
+not.** Android's `onTap` calls `allowSelectionHandles()` *before* its 300ms timer, so the caret is
+visible at the tap position until the selection expands to the whole word; the Android-only fourth
+test pins that window (it has to tap by hand, because `tapInParagraph`'s trailing `pumpAndSettle()`
+runs the timer). NOTE-181 read the call as observable only when handles were *already* prevented
+when the tap arrived, and concluded nothing reachable produces that, because the `ModalBarrier`
+means a tap while a popover is up dismisses it — running `_hideSpellCheckerPopover()`, which allows
+handles — rather than landing on a second mis-spelled word.
+
+**That reasoning was right about pointers and wrong about everything else.** The popover has a
+fourth exit nobody had counted: `computeLayoutDataWithDocumentLayout` returns `null` when
+`composer.selection == null`, and its post-frame callback then hides the toolbar — which is neither
+`_hideSpellCheckerPopover()` nor the toolbar's document listener, so **nothing allows handles**. A
+null selection is ordinary on Android, not exotic: `SuperEditorSelectionPolicies`
+`clearSelectionWhenEditorLosesFocus` and `clearSelectionWhenImeConnectionCloses` both default to
+`true`, so the editor losing focus or the IME connection closing (the soft keyboard going away)
+gets there, and neither is a pointer the barrier can absorb. NOTE-182 measured that state directly:
+toolbar 0 widgets, `areSelectionHandlesAllowed == false`, via `ClearSelectionRequest` and via a real
+`focusNode.unfocus()` alike. The next tap on a mis-spelled word then reads `allowed == true` with
+one caret handle in the window before the timer — and with `:937` commented out reads
+`allowed == false`, no caret. So the call is the recovery path for a real stuck state, the `:937`
+row now names a test, and **the call stays.**
+
+Two more routes reached the same stuck state. One is **closed here**; the other is recorded.
+
+- **Closed: the plugin detached while the 300ms timer is pending.** The timer prevented handles and
+  *then* dereferenced `editor!`, which `detach()` nulls — so leaving the note within 300ms of
+  tapping a mis-spelled word threw `_TypeError: Null check operator used on a null value` out of a
+  `Timer` (`spelling_and_grammar_plugin.dart:972`, via `FakeTimer._fire`) and left the controls
+  controller vetoed by a handler with no editor. **The timer now bails out when `editor == null`,
+  before the cascade** — the smallest correct shape, and the one that leaves nothing prevented:
+  cancelling the timer from `detach()` would work too but needs the handler to hold and clear a
+  `Timer` field, i.e. state and a second teardown path, to buy the same nothing-happens. Measured on
+  the disposal route: `allowed` stays `true` and no exception surfaces; with the guard removed, the
+  throw plus `areSelectionHandlesAllowed` `false`.
+- **Recorded: an app calling `SpellCheckerPopoverController.hide()`**, reachable through the public
+  `contentTapHandlers` getter. Nothing in either repo does it.
+
+What was measured *not* to leak: typing while the popover is up (the toolbar's own document listener
+allows handles, and keys do reach the editor past the barrier), two taps on mis-spelled words inside
+one 300ms window (both timers prevent, and the popover is up at the end), and a double-tap on a
+mis-spelled word (`onDoubleTap` allows, the pending timer then prevents and shows the popover).
+
+**What the null-selection stuck state actually looks like, measured** — worth recording precisely,
+because it is worse than "no handles" and narrower than "until the next spellcheck tap". A tap or a
+double-tap anywhere recovers it, because both reach `_hideSpellCheckerPopover()` on Android
+(measured: tap on a correctly-spelled word → `allowed` `true`, caret 1, collapsed handle 1;
+double-tap → 2 expanded handles). But a **long press** selects a word without going through the
+content tap handlers at all — the Android interactor only consults them for tap/doubleTap/tripleTap
+— so a long-press made while stuck lands a real selection (`1: [22, 30]`) with **no caret, no
+collapsed handle and no expanded handles**: 0/0/0, matching NOTE-176's "caret 1 → 0" reading of the
+handles layer returning no layout data at all. And the popover is a zombie rather than gone: the
+null-selection path returns early without clearing `_currentSpellingSuggestions`, so restoring a
+selection re-shows the old toolbar — measured with the caret back inside the mis-spelled word
+(toolbar 1) *and* with it moved to a correctly-spelled word (toolbar still 1), handles prevented in
+both. **iOS sticks identically**, and has one recovery route fewer: its `onTap` has no pre-timer
+allow, so a tap on the *mis-spelled* word goes straight to prevent and leaves `allowed` `false`
+(measured), where the same tap on Android recovers. The fix belongs in
+`spelling_error_suggestion_overlay.dart`'s hide path, not in the tap handler, so NOTE-182 left it as
+a reported finding rather than widening its diff.
+
+NOTE-182 also removed the duplicated `hideToolbar()` from that cascade: it read
+`..hideToolbar() ..hideMagnifier() ..hideToolbar() ..preventSelectionHandles()`, where the iOS
+twin calls it once. Copy-paste, harmless, and idempotent — `hideToolbar()` just sets a
+`ValueNotifier` to `false`. Both it and the pre-timer call are pure upstream code: the fork's only
+divergence in `spelling_and_grammar_plugin.dart` is the nullable `_reaction` / desktop-platform
+work in `SpellingAndGrammarPlugin` and `SpellingAndGrammarReaction.react`, nothing in
+`SuperEditorAndroidSpellCheckerTapHandler`, and upstream `main` still carries the duplicate.
+**The duplicate removal is an obvious upstream candidate** — a one-line deletion in upstream's own
+file, and the comment added beside `:937` documents upstream's own call — recorded here, not
+submitted; that is Don's call.
+
+NOTE-182's counts, superseding the NOTE-181 figures in the paragraph below: `super_editor_spellcheck`
+**17 passing before, 19 after** — two new Android tests (the pre-timer recovery, and the
+detached-editor guard), and the table above now has a named test on every row. Each new test is the
+only failure when the call it covers is removed: 7/1 and 8/1 respectively. The `super_editor` suite
+is untouched (`super_editor` does not depend on `super_editor_spellcheck`, and nothing outside that
+package moved), and `flutter analyze` in the package still reports only the one pre-existing
+`unnecessary_import` info in `spellcheck_timing_test.dart`.
+
+One thing NOTE-182 tripped over and deliberately did not fix: **detaching the plugin by removing it
+from `SuperEditor`'s `plugins` set throws on its own**, with no timer involved. `detach()` removes
+the `spellingErrorSuggestions` resource, and `_SpellingErrorSuggestionOverlayState.dispose`
+(`spelling_error_suggestion_overlay.dart:149`) then reads it back: `Exception: Tried to find an
+editor resource for the ID 'SpellingAndGrammarPlugin.spellingErrorSuggestions'`. Measured on a
+control with no pending timer, so it is pre-existing and orthogonal. Disposing the whole editor
+instead does *not* hit it, which is why the new guard's test takes that route.
 
 NOTE-181 touches only `super_editor_spellcheck/test/`, so the `super_editor` suite is unmoved:
 **5719 passing, 7 skipped** at fork `e5fa2c7a` and the same afterwards. (5719, not the 5709 the

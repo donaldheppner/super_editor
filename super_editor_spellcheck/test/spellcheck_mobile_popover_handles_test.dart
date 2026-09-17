@@ -142,6 +142,81 @@ void main() {
 
         controlsController.cancelCollapsedHandleAutoHideCountdown();
       });
+
+      testWidgetsOnAndroid("recovers handles on the next tap when the popover left them prevented", (tester) async {
+        // The recovery path, and the only thing that exercises Android onTap's pre-timer
+        // allowSelectionHandles(). A popover can go away without either of the two calls
+        // that allow handles running: the overlay hides its toolbar from
+        // computeLayoutDataWithDocumentLayout whenever the selection is null, which is
+        // neither _hideSpellCheckerPopover() nor the toolbar's document listener. Losing
+        // the selection is ordinary on Android - SuperEditorSelectionPolicies clears it
+        // when the editor loses focus and when the IME connection closes, both by default
+        // - so the editor can be left with handles prevented and no popover, and the
+        // pre-timer call is what un-sticks the next tap on a mis-spelled word.
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        final editor = await _pumpSpellcheckEditor(tester, androidControlsController: controlsController);
+
+        await _placeCaretOnACorrectlySpelledWord(tester);
+        await _tapMisspelledWord(tester);
+        expect(controlsController.areSelectionHandlesAllowed.value, isFalse);
+
+        // Clear the selection, exactly as those two policies do.
+        editor.execute([const ClearSelectionRequest()]);
+        await _settleSuggestionPopover(tester);
+
+        // The popover is gone and nothing allowed handles again.
+        expect(find.byType(AndroidSpellingSuggestionToolbar), findsNothing);
+        expect(controlsController.areSelectionHandlesAllowed.value, isFalse);
+
+        // Tap by hand, for the same reason the 300ms-window test above does: a trailing
+        // pumpAndSettle() would run the timer and skip past the window this asserts on.
+        final gesture = await tester.tapDownInParagraph("1", _misspelledWordMiddle);
+        await gesture.up();
+        await tester.pump(kTapMinTime + const Duration(milliseconds: 1));
+
+        expect(controlsController.areSelectionHandlesAllowed.value, isTrue);
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsOneWidget);
+
+        // Let the timer fire, so the test doesn't end on a pending Timer.
+        await tester.pump(const Duration(milliseconds: 400));
+        await _settleSuggestionPopover(tester);
+
+        controlsController.cancelCollapsedHandleAutoHideCountdown();
+      });
+
+      testWidgetsOnAndroid("survives the editor going away inside the 300ms window", (tester) async {
+        // Android's tap handler does its real work in a 300ms timer, and that timer holds
+        // no weak reference to anything: if the plugin is detached while it's pending -
+        // the editor replaced, or the whole editor disposed, which
+        // SpellingAndGrammarPlugin.detach answers by nulling `editor` - it used to
+        // prevent selection handles and *then* throw on `editor!`, so an app that left
+        // the note within 300ms of tapping a mis-spelled word got an unhandled
+        // "Null check operator used on a null value" out of a Timer and a controls
+        // controller vetoed by a handler that no longer had an editor. The timer now
+        // bails out before the cascade.
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpSpellcheckEditor(tester, androidControlsController: controlsController);
+
+        await _placeCaretOnACorrectlySpelledWord(tester);
+
+        // Tap by hand: a trailing pumpAndSettle() would run the timer before the editor
+        // can go away, which is the whole window under test.
+        final gesture = await tester.tapDownInParagraph("1", _misspelledWordMiddle);
+        await gesture.up();
+        await tester.pump(kTapMinTime + const Duration(milliseconds: 1));
+
+        // The editor goes away with the timer still pending.
+        await tester.pumpWidget(const MaterialApp(home: Scaffold(body: SizedBox())));
+        await tester.pump(const Duration(milliseconds: 400));
+        await _settleSuggestionPopover(tester);
+
+        expect(tester.takeException(), isNull);
+        expect(controlsController.areSelectionHandlesAllowed.value, isTrue);
+
+        controlsController.cancelCollapsedHandleAutoHideCountdown();
+      });
     });
 
     group("on iOS >", () {

@@ -934,15 +934,34 @@ class SuperEditorAndroidSpellCheckerTapHandler extends _SpellCheckerContentTapDe
 
     // Allow the selection handles, otherwise the caret won't be visible prior
     // to expanding the selection.
+    //
+    // This also recovers from a popover that went away without anything allowing
+    // handles again. The suggestions overlay hides its toolbar from
+    // `computeLayoutDataWithDocumentLayout` whenever the selection is null, which is
+    // neither `_hideSpellCheckerPopover()` nor the toolbar's own document listener,
+    // so losing the selection while the popover is up (which is what
+    // `SuperEditorSelectionPolicies.clearSelectionWhenEditorLosesFocus` and
+    // `clearSelectionWhenImeConnectionCloses` both do, and both default to `true`)
+    // leaves the editor with handles prevented and no popover. This call is what
+    // un-sticks the next tap on a mis-spelled word.
     controlsController.allowSelectionHandles();
 
     Timer(const Duration(milliseconds: 300), () {
+      if (editor == null) {
+        // This plugin was detached while the timer was pending - the editor was
+        // replaced, or the whole editor went away, within 300ms of the tap.
+        // `SpellingAndGrammarPlugin.detach` nulls `editor`, so there is nothing left
+        // to select and no popover to show. Bail out before the cascade below: it
+        // would prevent handles that no popover is about to cover, and then throw on
+        // `editor!` anyway, leaving the editor's controls vetoed from a dead handler.
+        return;
+      }
+
       // Hide all controls and prevent handles being displayed. We don't want
       // to display drag handles while the suggestion popover is visible.
       controlsController
         ..hideToolbar()
         ..hideMagnifier()
-        ..hideToolbar()
         ..preventSelectionHandles();
 
       // The word bounds around the tap position.
