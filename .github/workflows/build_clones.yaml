@@ -1,5 +1,7 @@
 name: Build Clones
-on: [pull_request]
+# THROWAWAY BRANCH (MemNote NOTE-179): neutralised so this measurement does not queue
+# six macOS clone builds per push while five sibling PRs need those runners. DO NOT MERGE.
+on: workflow_dispatch
 
 # MemNote fork (NOTE-165): this fork pins the Flutter SDK instead of tracking the
 # "master" channel that upstream uses. See the CI section of FORK_PATCHES.md for why.

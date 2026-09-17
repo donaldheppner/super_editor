@@ -1,9 +1,10 @@
 name: Test project in a PR
+
+# THROWAWAY BRANCH (MemNote NOTE-179). Stripped to the three `super_editor` test jobs
+# plus two `-j` variants of the mac job, so the measurement does not queue macOS
+# runners the sibling PRs need. DO NOT MERGE.
 on: [pull_request]
 
-# MemNote fork (NOTE-165): this fork pins the Flutter SDK instead of tracking the
-# "master" channel that upstream uses. See the CI section of FORK_PATCHES.md for why.
-# Bump FLUTTER_VERSION here and in build_clones.yaml whenever MemNote's toolchain moves.
 env:
   FLUTTER_VERSION: "3.47.2"
 
@@ -12,400 +13,135 @@ jobs:
     runs-on: macos-latest
     defaults:
       run:
-        # Run everything from within the super_editor project directory
         working-directory: ./super_editor
     steps:
-      # Checkout the PR branch
       - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      #
-      # MemNote fork (NOTE-177): no `architecture: x64` here. macos-latest is arm64, so that
-      # line installed a Rosetta x64 SDK and ran the whole suite emulated - this was the
-      # longest job in the workflow by a factor of four. The ubuntu golden jobs below keep
-      # their x64 line because x64 is native there and the goldens are byte-compared.
       - uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
+      - name: Runner facts
+        run: |
+          echo "### runner facts: mac (default -j)"
+          sysctl -n hw.ncpu hw.physicalcpu hw.logicalcpu hw.memsize hw.model
+          uname -m
       - run: flutter pub get
+      - run: flutter test --file-reporter=json:ci_report.json
+      - name: Summarise timings
+        if: always()
+        run: dart run ci_timings.dart ci_report.json mac_default
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-mac-default
+          path: super_editor/ci_report.json
 
-      # TODO: run static analysis here when we get to zero analysis warnings
+  test_mac_j2:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ./super_editor
+    steps:
+      - uses: actions/checkout@v3
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Runner facts
+        run: |
+          echo "### runner facts: mac (-j 2)"
+          sysctl -n hw.ncpu hw.physicalcpu hw.logicalcpu hw.memsize hw.model
+          uname -m
+      - run: flutter pub get
+      - run: flutter test -j 2 --file-reporter=json:ci_report.json
+      - name: Summarise timings
+        if: always()
+        run: dart run ci_timings.dart ci_report.json mac_j2
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-mac-j2
+          path: super_editor/ci_report.json
 
-      # Run all tests
-      - run: flutter test
+  test_mac_j3:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ./super_editor
+    steps:
+      - uses: actions/checkout@v3
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Runner facts
+        run: |
+          echo "### runner facts: mac (-j 3)"
+          sysctl -n hw.ncpu hw.physicalcpu hw.logicalcpu hw.memsize hw.model
+          uname -m
+      - run: flutter pub get
+      - run: flutter test -j 3 --file-reporter=json:ci_report.json
+      - name: Summarise timings
+        if: always()
+        run: dart run ci_timings.dart ci_report.json mac_j3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-mac-j3
+          path: super_editor/ci_report.json
 
   test_windows:
     runs-on: windows-latest
     defaults:
       run:
-        # Run everything from within the super_editor project directory
         working-directory: ./super_editor
     steps:
-      # Checkout the PR branch
       - uses: actions/checkout@v3
-
-      # Setup Flutter environment
       - uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
+      - name: Runner facts
+        run: |
+          echo "### runner facts: windows"
+          echo "NUMBER_OF_PROCESSORS=$env:NUMBER_OF_PROCESSORS"
+          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors | Format-List
+        shell: pwsh
       - run: flutter pub get
-
-      # TODO: run static analysis here when we get to zero analysis warnings
-
-      # Run all tests
-      - run: flutter test
+      - run: flutter test --file-reporter=json:ci_report.json
+      - name: Summarise timings
+        if: always()
+        run: dart run ci_timings.dart ci_report.json windows
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-windows
+          path: super_editor/ci_report.json
 
   test_linux:
     runs-on: ubuntu-latest
     defaults:
       run:
-        # Run everything from within the super_editor project directory
         working-directory: ./super_editor
     steps:
-      # Checkout the PR branch
       - uses: actions/checkout@v3
-
-      # Setup Flutter environment
       - uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
+      - name: Runner facts
+        run: |
+          echo "### runner facts: linux"
+          nproc
+          lscpu | head -20
+          free -m
       - run: flutter pub get
-
-      # TODO: run static analysis here when we get to zero analysis warnings
-
-      # Run all tests
-      - run: flutter test
-
-  test_goldens_super_editor:
-    if: ${{ github.base_ref == 'main' }}
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_editor
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Run all golden tests
-      - run: flutter test test_goldens
-
-      # Archive golden failures
+      - run: flutter test --file-reporter=json:ci_report.json
+      - name: Summarise timings
+        if: always()
+        run: dart run ci_timings.dart ci_report.json linux
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: always()
         with:
-          name: golden-failures
-          path: "**/failures/**/*.png"
-
-  test_super_editor_spellcheck:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_editor_spellcheck
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Run all tests
-      - run: flutter test
-  
-  test_super_editor_spellcheck_goldens:
-    if: ${{ github.base_ref == 'main' }}
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_editor_spellcheck
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Run all golden tests
-      - run: flutter test test_goldens
-
-      # Archive golden failures
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: golden-failures
-          path: "**/failures/**/*.png"
-
-  analyze_super_editor_clipboard:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_editor_clipboard
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Enforce static analysis
-      - run: flutter analyze
-
-  test_super_editor_clipboard:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_editor_clipboard
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Run all tests
-      - run: flutter test
-
-  analyze_super_keyboard:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_keyboard
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Enforce static analysis
-      - run: flutter analyze
-
-  test_super_keyboard:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_keyboard
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Run all tests
-      - run: flutter test
-
-  test_goldens_super_keyboard:
-    if: ${{ github.base_ref == 'main' }}
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_keyboard
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Run all golden tests
-      - run: flutter test test_goldens
-
-      # Archive golden failures
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: golden-failures
-          path: "**/failures/**/*.png"
-
-  analyze_super_text_layout:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_text_layout
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Enforce static analysis
-      - run: flutter analyze
-
-  test_super_text_layout:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_text_layout
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Run all tests
-      - run: flutter test
-
-  test_goldens_super_text_layout:
-    if: ${{ github.base_ref == 'main' }}
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_text_layout
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Flutter environment
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          architecture: x64
-
-      # Download all the packages that the app uses
-      - run: flutter pub get
-
-      # Run all golden tests
-      - run: flutter test test_goldens
-
-      # Archive golden failures
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: golden-failures
-          path: "**/failures/**/*.png"
-
-  analyze_attributed_text:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./attributed_text
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Dart
-      - uses: dart-lang/setup-dart@v1
-
-      # Install app dependencies
-      - run: dart pub get
-
-      # Enforce static analysis
-      - run: dart analyze
-
-  test_attributed_text:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./attributed_text
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Dart
-      - uses: dart-lang/setup-dart@v1
-
-      # Install app dependencies
-      - run: dart pub get
-
-      # Run all tests
-      - run: dart test
-
-  build_docs_websiste:
-    # Run this job only when the PR is targeting the main branch
-    if: ${{ github.base_ref == 'main' }}
-    runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: ./doc/website
-
-    steps:
-      # Checkout the PR branch
-      - uses: actions/checkout@v3
-
-      # Setup Dart environment
-      - uses: dart-lang/setup-dart@v1
-
-      # Download all the packages that the app uses
-      - run: dart pub get
-
-      # Build the static site
-      - run: dart run bin/super_editor_docs.dart
+          name: report-linux
+          path: super_editor/ci_report.json
