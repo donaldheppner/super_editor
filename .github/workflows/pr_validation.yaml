@@ -1,15 +1,18 @@
 name: Test project in a PR
 
-# THROWAWAY BRANCH (MemNote NOTE-179). Stripped to the three `super_editor` test jobs
-# plus two `-j` variants of the mac job, so the measurement does not queue macOS
-# runners the sibling PRs need. DO NOT MERGE.
+# THROWAWAY BRANCH (MemNote NOTE-179), third push. Runs 1 and 2 settled the cause
+# (macos-latest is 3-core, so package:test's `max(1, nproc ~/ 2)` default gave
+# concurrency 1 and the suite ran serially). They disagreed on whether -j 2 or -j 3
+# is the better setting, so this push is paired replicates of just those two, with
+# swap/memory readings to explain -j 3's per-test inflation. No linux/windows job and
+# no clone builds: the sibling PRs need those runners. DO NOT MERGE.
 on: [pull_request]
 
 env:
   FLUTTER_VERSION: "3.47.2"
 
 jobs:
-  test_mac:
+  mac_j2_a:
     runs-on: macos-latest
     defaults:
       run:
@@ -20,50 +23,22 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-      - name: Runner facts
-        run: |
-          echo "### runner facts: mac (default -j)"
-          sysctl -n hw.ncpu hw.physicalcpu hw.logicalcpu hw.memsize hw.model
-          uname -m
-      - run: flutter pub get
-      - run: flutter test --file-reporter=json:ci_report.json
-      - name: Summarise timings
-        if: always()
-        run: dart run ci_timings.dart ci_report.json mac_default
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: report-mac-default
-          path: super_editor/ci_report.json
-
-  test_mac_j2:
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: ./super_editor
-    steps:
-      - uses: actions/checkout@v3
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-      - name: Runner facts
-        run: |
-          echo "### runner facts: mac (-j 2)"
-          sysctl -n hw.ncpu hw.physicalcpu hw.logicalcpu hw.memsize hw.model
-          uname -m
+      - run: sysctl -n hw.ncpu hw.memsize hw.model && sysctl vm.swapusage
       - run: flutter pub get
       - run: flutter test -j 2 --file-reporter=json:ci_report.json
+      - name: Memory after
+        if: always()
+        run: sysctl vm.swapusage && vm_stat
       - name: Summarise timings
         if: always()
-        run: dart run ci_timings.dart ci_report.json mac_j2
+        run: dart run ci_timings.dart ci_report.json mac_j2_a
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: report-mac-j2
+          name: report-mac-j2-a
           path: super_editor/ci_report.json
 
-  test_mac_j3:
+  mac_j2_b:
     runs-on: macos-latest
     defaults:
       run:
@@ -74,24 +49,49 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-      - name: Runner facts
-        run: |
-          echo "### runner facts: mac (-j 3)"
-          sysctl -n hw.ncpu hw.physicalcpu hw.logicalcpu hw.memsize hw.model
-          uname -m
+      - run: sysctl -n hw.ncpu hw.memsize hw.model && sysctl vm.swapusage
+      - run: flutter pub get
+      - run: flutter test -j 2 --file-reporter=json:ci_report.json
+      - name: Memory after
+        if: always()
+        run: sysctl vm.swapusage && vm_stat
+      - name: Summarise timings
+        if: always()
+        run: dart run ci_timings.dart ci_report.json mac_j2_b
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-mac-j2-b
+          path: super_editor/ci_report.json
+
+  mac_j3_a:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ./super_editor
+    steps:
+      - uses: actions/checkout@v3
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - run: sysctl -n hw.ncpu hw.memsize hw.model && sysctl vm.swapusage
       - run: flutter pub get
       - run: flutter test -j 3 --file-reporter=json:ci_report.json
+      - name: Memory after
+        if: always()
+        run: sysctl vm.swapusage && vm_stat
       - name: Summarise timings
         if: always()
-        run: dart run ci_timings.dart ci_report.json mac_j3
+        run: dart run ci_timings.dart ci_report.json mac_j3_a
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: report-mac-j3
+          name: report-mac-j3-a
           path: super_editor/ci_report.json
 
-  test_windows:
-    runs-on: windows-latest
+  mac_j3_b:
+    runs-on: macos-latest
     defaults:
       run:
         working-directory: ./super_editor
@@ -101,47 +101,17 @@ jobs:
         with:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
-      - name: Runner facts
-        run: |
-          echo "### runner facts: windows"
-          echo "NUMBER_OF_PROCESSORS=$env:NUMBER_OF_PROCESSORS"
-          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors | Format-List
-        shell: pwsh
+      - run: sysctl -n hw.ncpu hw.memsize hw.model && sysctl vm.swapusage
       - run: flutter pub get
-      - run: flutter test --file-reporter=json:ci_report.json
+      - run: flutter test -j 3 --file-reporter=json:ci_report.json
+      - name: Memory after
+        if: always()
+        run: sysctl vm.swapusage && vm_stat
       - name: Summarise timings
         if: always()
-        run: dart run ci_timings.dart ci_report.json windows
+        run: dart run ci_timings.dart ci_report.json mac_j3_b
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: report-windows
-          path: super_editor/ci_report.json
-
-  test_linux:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./super_editor
-    steps:
-      - uses: actions/checkout@v3
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-      - name: Runner facts
-        run: |
-          echo "### runner facts: linux"
-          nproc
-          lscpu | head -20
-          free -m
-      - run: flutter pub get
-      - run: flutter test --file-reporter=json:ci_report.json
-      - name: Summarise timings
-        if: always()
-        run: dart run ci_timings.dart ci_report.json linux
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: report-linux
+          name: report-mac-j3-b
           path: super_editor/ci_report.json
