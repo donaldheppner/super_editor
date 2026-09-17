@@ -141,6 +141,37 @@ maintenance the next Flutter bump inherits:
   `architecture: x64`, and should — they run on `ubuntu-latest`, where x64 *is*
   the native architecture, and their images are byte-compared.
 
+**The residual NOTE-177 left was neither the macOS runner's floor nor a slow test
+file — it was `package:test`'s concurrency default, and `test_mac` now passes
+`-j 3`** (NOTE-179). `flutter test` forwards no `--concurrency`, so `package:test`
+falls back to `max(1, numberOfProcessors ~/ 2)`; `macos-latest` is a **3**-core box
+(`hw.ncpu` 3, 7 GiB, `VirtualMac2,1` arm64), so that integer division yields **1**
+and the suite ran strictly *serially*, while `ubuntu-latest` (4 cores) and
+`windows-latest` (4 logical / 2 physical) both got 2. Measured on a throwaway branch
+with `flutter test --file-reporter=json`, summing per-test durations by suite, the
+parallelism actually achieved — summed test time over wall time — was **0.99x on
+mac against 1.97-1.98x on linux and windows**, which is the entire gap in one
+number; `-j 3` takes it to 2.98x. Medians of the `flutter test` step: **mac 581s
+(default, n=2) → 358s (`-j 2`, n=4) → 230s (`-j 3`, n=4)**, against `test_linux`
+243s and `test_windows` 493s — so `test_mac` is now *below* both, and the whole job's
+median went 11m41s → 5m40s on the same single runner. The per-file half of the question
+came back empty: across the 130 suites over 200 ms the mac/linux ratio is tight and
+only 0-2 suites of 152 ever exceed 3x (1-4 s each), and run *serially* mac's
+per-suite times were **0.90x** of linux's median in one run and 1.64x in another, so
+the runner is not slow and there is nothing to fix or skip on macOS. Sharding was
+rejected: two shards at concurrency 1 would still be ~7 min each and burn two macOS
+runners, worse than 5m40s on one, and macOS runners are the contended resource. Two
+traps for whoever re-reads these numbers — NOTE-179's own "2.3x" was a *cross-run*
+comparison (`test_mac` against a `test_linux` from a different run; same-run it was
+1.64-1.97x), and one unchanged config varies by up to 1.5x between runs on these
+shared VMs (`ubuntu-latest` summed 276.6 s then 421.0 s on consecutive runs; one
+`-j 3` sample came in at 397s against a 215-241s median, with `vm.swapusage` at zero
+and 1.9 GB free, so that outlier was a noisy host and not memory) — which is why the
+overlap factor, not a single wall clock, is what to judge a change like this on.
+`test_linux` and `test_windows` run under the same halved default and have headroom
+of their own; they are deliberately untouched here, because NOTE-179 was scoped to
+`test_mac`.
+
 **Nothing ran a clone's tests until NOTE-177.** `build_clones.yaml` only built
 the six clones it knew about, so obsidian's `tabbed_editor_test.dart` (written
 in NOTE-165, replacing the unedited `flutter create` counter test that could

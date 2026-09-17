@@ -35,7 +35,16 @@ jobs:
       # TODO: run static analysis here when we get to zero analysis warnings
 
       # Run all tests
-      - run: flutter test
+      #
+      # MemNote fork (NOTE-179): `-j 3` is load-bearing, and it is the reason this job is
+      # no longer the long pole. `flutter test` passes no `--concurrency`, so package:test
+      # uses its own default of `max(1, numberOfProcessors ~/ 2)`; macos-latest is a
+      # *3*-core runner, so that integer division yields 1 and the suite ran strictly
+      # serially - while ubuntu-latest and windows-latest report 4 processors and both got
+      # 2. Medians: this step went 581s (default, n=2) -> 230s (`-j 3`, n=4), which is under
+      # test_linux's own median. Match `-j` to `sysctl -n hw.ncpu` if the runner's core count ever
+      # changes; see the CI section of FORK_PATCHES.md for the full measurements.
+      - run: flutter test -j 3
 
   test_windows:
     runs-on: windows-latest
