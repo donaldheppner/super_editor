@@ -142,18 +142,32 @@ maintenance the next Flutter bump inherits:
   the native architecture, and their images are byte-compared.
 
 **Nothing ran a clone's tests until NOTE-177.** `build_clones.yaml` only built
-the six clones it knows about, so obsidian's `tabbed_editor_test.dart` (written
+the six clones it knew about, so obsidian's `tabbed_editor_test.dart` (written
 in NOTE-165, replacing the unedited `flutter create` counter test that could
 never have passed) and quill's `toolbar_indent_test.dart` (NOTE-146) were run by
 a human or by nobody. Both now run as a `flutter test` step inside the clone's
 existing `build_*` job — 11s for obsidian and 17s for quill, because the SDK
 install and `pub get` are already paid for there and no second macOS runner has
-to be queued. The other four clones in that workflow — bear, google_docs,
-medium, slack — have no tests at all, so their jobs still prove only that the
-clone compiles; the comment at the top of `build_clones.yaml` says which is
-which, so nobody reads six green checks as six tested clones.
-(`super_clones/ios_messenger` is in neither list: no tests, and no build job
-either.)
+to be queued. The other clones in that workflow — bear, google_docs, medium,
+slack — have no tests at all, so their jobs still prove only that the clone
+compiles; the comment at the top of `build_clones.yaml` says which is which, so
+nobody reads a run of green checks as every clone tested.
+
+**`super_clones/ios_messenger` had no build job at all until NOTE-178**, and so
+was invisible to CI for a dozen fork versions even after NOTE-174 fixed its
+`super_keyboard` pin so the clone resolves and builds again — NOTE-174 stayed
+off CI on purpose, and NOTE-177 stayed off it because the clone could not
+resolve until NOTE-174 landed. `build_ios_messenger` closes that gap, joining
+the no-tests group above (it carries no `test/` directory). It also carries
+only `android/` and `ios/` platform directories, unlike the other six clones'
+`macos/`, so its build step is `flutter build ios --no-codesign --debug` rather
+than `flutter build macos --debug` — the clone's namesake platform, and what a
+macOS runner is for. `flutter build apk --debug` (what NOTE-174 verified
+locally, since Android is the only platform a Windows machine can build for
+this clone) was the fallback if the iOS build failed for a runner reason; it
+was not needed — the iOS build was green on the first fork PR that added it,
+in 3m40s, in line with the other six clone jobs on the same run (2m53s-3m14s,
+with `build_medium`'s web build the outlier at 1m38s).
 
 Two workflows are expected not to run. `Cherry pick to stable` is gated to the
 upstream repository — this fork keeps no maintained `stable` branch, so it went
