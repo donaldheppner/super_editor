@@ -44,7 +44,7 @@ Two more things a fresh clone needs:
   fork carries no patch to any of those three — the day it does, uncomment the
   `dependency_overrides` block already sitting in their pubspecs.
 
-### CI: the fork pins Flutter, and a green run is the bar (NOTE-165, NOTE-177)
+### CI: the fork pins Flutter, and a green run is the bar (NOTE-165, NOTE-177, NOTE-178, NOTE-179)
 
 Upstream's workflows install the `master` channel. This fork pins the SDK
 instead — `FLUTTER_VERSION` at the top of `.github/workflows/pr_validation.yaml`
@@ -197,7 +197,7 @@ macOS runner is for. `flutter build apk --debug` (what NOTE-174 verified
 locally, since Android is the only platform a Windows machine can build for
 this clone) was the fallback if the iOS build failed for a runner reason; it
 was not needed — the iOS build was green on the first fork PR that added it,
-in 3m40s, in line with the other six clone jobs on the same run (2m53s-3m14s,
+in 3m40s, in line with the other six clone jobs on the same run (2m50s-3m14s,
 with `build_medium`'s web build the outlier at 1m38s).
 
 Two workflows are expected not to run. `Cherry pick to stable` is gated to the
@@ -1538,7 +1538,7 @@ would rebuild the presenter on every build. Sensitivity: the first test verified
 five platform variants before the fix, passing after. Fork suite: 5712 passing, 7 skipped (5702
 before these ten variants, at fork `main` `3034ff3c`).
 
-### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded and collapsed handles (MemNote NOTE-171, NOTE-176, NOTE-181)
+### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded and collapsed handles (MemNote NOTE-171, NOTE-176, NOTE-181, NOTE-182, NOTE-183, NOTE-184)
 
 `super_editor/lib/src/default_editor/document_gestures_touch_android.dart`,
 `super_editor/lib/src/chat/super_message_android_overlays.dart`
@@ -1810,7 +1810,10 @@ Two more routes reached the same stuck state. One is **closed here**; the other 
   cancelling the timer from `detach()` would work too but needs the handler to hold and clear a
   `Timer` field, i.e. state and a second teardown path, to buy the same nothing-happens. Measured on
   the disposal route: `allowed` stays `true` and no exception surfaces; with the guard removed, the
-  throw plus `areSelectionHandlesAllowed` `false`.
+  throw plus `areSelectionHandlesAllowed` `false`. On MemNote's own shape, where the controls
+  controller is disposed along with the editor (`super_note_editor_panel.dart`'s `dispose()` and its
+  colour-theme swap both do that), the unguarded cascade throws `A ValueNotifier<bool> was used after
+  being disposed` before it ever reaches the null check.
 - **Recorded: an app calling `SpellCheckerPopoverController.hide()`**, reachable through the public
   `contentTapHandlers` getter. Nothing in either repo does it.
 
