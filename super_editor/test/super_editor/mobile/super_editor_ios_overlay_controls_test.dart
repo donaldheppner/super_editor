@@ -598,6 +598,52 @@ void main() {
         expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
         expect(tester.binding.hasScheduledFrame, isFalse);
       });
+
+      testWidgetsOnIos("builds handles that are never hit-testable, yet are still draggable", (tester) async {
+        // Every assertion above uses a plain handle finder, never `.hitTestable()`. That is not
+        // a style choice, and an author arriving from the Android twin of this file - where
+        // MemNote NOTE-171's custom-builder tests do assert `.hitTestable()`, because on Android
+        // the handle widgets live in the overlay manager, outside any `IgnorePointer` and inside
+        // a `Follower` - would get it wrong. `IosControlsDocumentLayerState.doBuild` wraps the
+        // whole handles layer in an unconditional `IgnorePointer`, so on iOS `.hitTestable()`
+        // reports zero handles in *every* configuration, whether or not
+        // `preventSelectionHandles()` is in force. A `.hitTestable()` assertion on an iOS handle
+        // would therefore pass for the wrong reason, and go on passing if the handle stopped
+        // being suppressed (MemNote NOTE-184).
+        //
+        // It costs nothing, because an iOS handle is not dragged through its own widget:
+        // `IosDocumentTouchInteractor._isOverBaseHandle`/`_isOverExtentHandle` derive a hit area
+        // from the *selection's* rect and the interactor's own `RawGestureDetector` picks the pan
+        // up. The drag below is the half of this test that makes "not hit-testable" a fact about
+        // the architecture rather than a defect.
+        final controlsController = SuperEditorIosControlsController();
+        addTearDown(controlsController.dispose);
+        final editor = await _pumpAppOwnedControls(tester, controlsController);
+
+        await tester.doubleTapInParagraph("1", 250);
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsExactly(2));
+        expect(SuperEditorInspector.findMobileExpandedDragHandles().hitTestable(), findsNothing);
+
+        final selectionBefore = editor.composer.selection!;
+
+        // Press at the upstream handle's own centre - which `pressDownOnUpstreamMobileHandle`
+        // locates with the plain finder, for the reason above - and drag it upstream.
+        final gesture = await tester.pressDownOnUpstreamMobileHandle();
+        for (int i = 0; i < 5; i += 1) {
+          await gesture.moveBy(const Offset(-24, 0));
+          await tester.pump();
+        }
+        await gesture.up();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        // The drag landed: the base moved upstream and the extent stayed put.
+        final selectionAfter = editor.composer.selection!;
+        expect(
+          (selectionAfter.base.nodePosition as TextNodePosition).offset,
+          lessThan((selectionBefore.base.nodePosition as TextNodePosition).offset),
+        );
+        expect(selectionAfter.extent, selectionBefore.extent);
+      });
     });
 
     group("layer lifecycle >", () {

@@ -1806,6 +1806,97 @@ NOTE-181 is the most upstreamable of this set — it is a pure test addition aga
 `super_editor_spellcheck`, with no fork `lib/` change under it — but it has not been submitted;
 that is Don's call.
 
+**No iOS handle assertion may use `.hitTestable()` (NOTE-184).** NOTE-181 noticed in passing that
+with the iOS `preventSelectionHandles()` commented out, `findMobileExpandedDragHandles()` found 2
+widgets while the same finder with `.hitTestable()` found 0, and left it unchased with three
+candidate causes tangled together — the app-owned controls scope, the popover's own overlay, and
+test-surface geometry. It is none of them. `IosControlsDocumentLayerState.doBuild`
+(`super_editor/lib/src/infrastructure/platforms/ios/ios_document_controls.dart:886`) wraps the
+entire handles layer — the collapsed caret and both expanded handles — in an **unconditional
+`IgnorePointer`**, so on iOS `.hitTestable()` reports zero handles in every configuration.
+Measured on an 800x600 surface, each variant double-tapping a word:
+
+| iOS variant | handle widgets | hit-testable |
+|---|---|---|
+| (a) plain `SuperEditor`, no app-owned scope | 2 | 0 |
+| (b) app-owned `SuperEditorIosControlsScope` in `MaterialApp`/`Scaffold`, no plugin | 2 | 0 |
+| (c) (b) plus the spellcheck plugin, correctly-spelled word, no popover | 2 | 0 |
+| (d) NOTE-181's state: popover up, `preventSelectionHandles()` in force | 0 | 0 |
+| (d′) (d) with the veto lifted — the original observation | 2 | 0 |
+
+All three suspects are exonerated. The handle rects sit well inside the surface —
+`(492.0, 15.2, 508.0, 49.2)` and `(636.0, 27.2, 652.0, 61.2)` in (a), unchanged in (b) and (c) —
+both `RenderBox`es are attached, nothing is `Offstage`, and the innermost pointer ancestor of each
+handle is `IgnorePointer(ignoring: true)`. The veto itself works exactly as NOTE-148 left it: (d)
+versus (d′) is the whole 2-versus-0 story, and it is a widget count, not a hit test.
+
+**So an iOS handle test asserts the plain finders** — `findMobileExpandedDragHandles()`,
+`findMobileUpstreamDragHandle()`, `findMobileDownstreamDragHandle()`,
+`findMobileCaretDragHandle()`, `findMobileCaret()` — which is what NOTE-148's and NOTE-181's iOS
+tests already do. `.hitTestable()` there is constant-zero: it would pass whether or not the handles
+were suppressed, and would go on passing after a regression put them back. **Android is the
+opposite, which is the trap for anyone porting a test across.** There the handle widgets live in
+`SuperEditorAndroidControlsOverlayManager`, outside the layer's `IgnorePointer` and inside a
+`Follower`, so `.hitTestable()` is meaningful — it is what NOTE-171 and NOTE-176 measured as
+"hit-testable 2 → 0" and "1 → 0" above, and what their custom-builder tests assert as the
+*before* condition. Controls, measured the same way: Android reports 2 widgets / **2**
+hit-testable, both with an app-owned scope and without one.
+
+**"Not hit-testable" is not "undraggable", and MemNote is not affected.** An iOS handle is never
+dragged through its own widget. `IosDocumentTouchInteractor._isOverBaseHandle` /
+`_isOverExtentHandle` / `_isOverCollapsedHandle`
+(`super_editor/lib/src/default_editor/document_gestures_touch_ios.dart:1074`–`1120`) derive a hit
+area from the *selection's* rect, and the interactor's own `RawGestureDetector` picks the pan up: a
+hit test at an iOS handle's centre lands on `RenderPointerListener` /
+`RenderSemanticsGestureHandler` / `_RenderSliverHybridStack`, that detector, where on Android it
+lands on the handle's own `RenderDecoratedBox`. Upstream's own "shows magnifier when dragging
+expanded handle" is the control, and `pressDownOnUpstreamMobileHandle()` is the evidence of intent
+— it locates the handle with the *plain* finder purely to get its geometry. Driven in variant (b),
+which is MemNote's exact arrangement (an app-owned `SuperEditorIosControlsScope` above
+`SuperEditor`, `super_note_editor_panel.dart:1236`), the drag moves the selection base from 22 to
+15 and raises the magnifier. There is no user-visible defect: iPhone users can drag MemNote's
+selection handles. Not confirmed on a device or simulator — the machine this was measured on is
+Windows-only and has neither.
+
+**Pinned by a test, in the group whose finder choice it explains.**
+`super_editor/test/super_editor/mobile/super_editor_ios_overlay_controls_test.dart`, group
+"selection handles allowed >", "builds handles that are never hit-testable, yet are still
+draggable": the plain finder finds 2, `.hitTestable()` finds none, and the drag still lands.
+Sensitivity — delete the `IgnorePointer` at `ios_document_controls.dart:886`, the one mutation that
+would make everything above wrong, and it fails on the `.hitTestable()` line ("some were found but
+none were expected"). That `IgnorePointer` is load-bearing for the reason MemNote's `CLAUDE.md`
+gives about custom components absorbing hits: the same deletion also fails 9 other tests across
+`super_editor_ios_overlay_controls_test.dart` and `super_editor_ios_selection_test.dart`, because
+the handles then swallow hits the gesture detector needs.
+
+**An API-contract note, not a defect: on iOS the veto governs visibility, not the drag.** Those
+three `_isOver*Handle` methods read only the selection, so a pan starting at the selection's edge is
+still *classified* as a handle drag while `areSelectionHandlesAllowed` is `false`. Measured in
+variant (b), driving the controller directly with no plugin attached: veto in force, **zero handle
+widgets on screen**, and pressing where the handle had been still moved the selection from
+`[22, 30]` to `[15, 30]` and still raised the magnifier — the magnifier is only raised on
+`_onPanStart`'s handle-drag branch (`document_gestures_touch_ios.dart:1062`–`1065`), so it is the
+proof the pan was taken as one. The Android control does the opposite, selection unmoved at
+`[22, 30]`, because its handle widget and the gesture detector inside it left the tree. So a client
+that calls `preventSelectionHandles()` itself and registers no pan-start hook of its own can still
+have a handle drag start from the selection's edge with nothing on screen to drag.
+
+**The only in-repo caller is unaffected, by construction — verified by running it, not by reading.**
+`_onPanStart` runs every `contentTapHandlers[i].onPanStart` *first*
+(`document_gestures_touch_ios.dart:1019`–`1035`) and classifies the handle drag only afterwards
+(`1049`–`1057`); `SuperEditorIosSpellCheckerTapHandler.onPanStart`
+(`spelling_and_grammar_plugin.dart:873`) runs `_hideSpellCheckerPopover()` while the popover is
+showing, which calls `allowSelectionHandles()` and hides the popover before returning
+`continueHandling`. Driven on NOTE-181's iOS fixture: before the pan, popover 1 / veto in force /
+0 handle widgets; once the drag is under way, **popover 0 / veto lifted / 2 handle widgets**, with
+the extent moved from offset 4 to 11 and the magnifier up. (Nothing changes on the pointer-down
+frame, because the drag recognizer needs movement before `onPanStart` fires at all.) The user
+therefore drags a *visible* handle, which is presumably why that override exists.
+`super_editor_spellcheck`'s iOS tap handler is the only iOS caller of `preventSelectionHandles()`
+in the fork, and MemNote's `flutter/lib` calls neither method itself, so no reachable path in either
+repo drags a hidden handle. Worth knowing before a second caller is added — not a defect, and
+nothing to fix here.
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:
