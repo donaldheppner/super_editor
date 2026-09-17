@@ -217,6 +217,53 @@ void main() {
 
         controlsController.cancelCollapsedHandleAutoHideCountdown();
       });
+
+      testWidgetsOnAndroid("swallows a drag rather than dismissing the popover", (tester) async {
+        // Android's tap handler has no onPanStart override, unlike its iOS twin, and that's
+        // deliberate - see the doc comment on SuperEditorAndroidSpellCheckerTapHandler. This
+        // test pins the behaviour that makes the asymmetry moot: the ModalBarrier the popover
+        // hangs over the document absorbs the drag, so nothing underneath it moves and there's
+        // nothing for a handler to react to. If that barrier ever goes away, this goes red and
+        // MemNote NOTE-183's question reopens.
+        final controlsController = SuperEditorAndroidControlsController();
+        addTearDown(controlsController.dispose);
+        await _pumpSpellcheckEditor(
+          tester,
+          androidControlsController: controlsController,
+          // Enough content to overflow the viewport, so "the document didn't scroll" is a real
+          // assertion rather than a vacuous one about an unscrollable fixture.
+          fillerParagraphCount: 40,
+        );
+
+        await _placeCaretOnACorrectlySpelledWord(tester);
+        await _tapMisspelledWord(tester);
+
+        final wordSelection = SuperEditorInspector.findDocumentSelection();
+        expect(find.byType(AndroidSpellingSuggestionToolbar), findsOneWidget);
+        expect(_documentScrollOffset(tester), 0.0);
+
+        await _dragUpOnTheDocument(tester);
+
+        // The barrier ate all of it: the popover is still up, the selection hasn't moved, the
+        // document hasn't scrolled, and handles are still prevented.
+        expect(find.byType(AndroidSpellingSuggestionToolbar), findsOneWidget);
+        expect(SuperEditorInspector.findDocumentSelection(), wordSelection);
+        expect(_documentScrollOffset(tester), 0.0);
+        expect(controlsController.areSelectionHandlesAllowed.value, isFalse);
+        expect(SuperEditorInspector.findMobileCaretDragHandle(), findsNothing);
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+
+        // The identical drag does scroll once the popover is gone. That's what makes the
+        // assertions above about the barrier, rather than about a document that can't scroll.
+        await tester.tapAt(tester.getBottomLeft(find.byType(SuperEditor)) + const Offset(10, -10));
+        await _settleSuggestionPopover(tester);
+        expect(find.byType(AndroidSpellingSuggestionToolbar), findsNothing);
+
+        await _dragUpOnTheDocument(tester);
+        expect(_documentScrollOffset(tester), greaterThan(0.0));
+
+        controlsController.cancelCollapsedHandleAutoHideCountdown();
+      });
     });
 
     group("on iOS >", () {
@@ -288,15 +335,20 @@ void main() {
 /// the controller the handle layers, the overlay manager and the suggestion toolbar all
 /// talk to. That's the `_pumpAppOwnedControls` shape from
 /// `super_editor/test/super_editor/mobile/super_editor_android_overlay_controls_test.dart`.
+/// Pass a non-zero [fillerParagraphCount] to append that many throwaway paragraphs after the
+/// spell-checked one, which is how a test gets a document tall enough to scroll.
 Future<Editor> _pumpSpellcheckEditor(
   WidgetTester tester, {
   SuperEditorAndroidControlsController? androidControlsController,
   SuperEditorIosControlsController? iosControlsController,
+  int fillerParagraphCount = 0,
 }) async {
   final editor = createDefaultDocumentEditor(
     document: MutableDocument(
       nodes: [
         ParagraphNode(id: "1", text: AttributedText(_paragraphText)),
+        for (int i = 0; i < fillerParagraphCount; i += 1)
+          ParagraphNode(id: "filler-$i", text: AttributedText("Filler paragraph number $i, with some text in it.")),
       ],
     ),
     composer: MutableDocumentComposer(),
@@ -345,6 +397,26 @@ Future<void> _tapMisspelledWord(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 400));
   await _settleSuggestionPopover(tester);
 }
+
+/// Drags upward from the middle of the editor, far enough past touch slop to scroll a document
+/// that can scroll.
+///
+/// The start point is the middle of the editor rather than a text offset so the touch can't land
+/// on the caret: Android's `EagerPanGestureRecognizer.shouldAccept` claims the pan when it starts
+/// over the caret, which drags the caret instead of scrolling.
+Future<void> _dragUpOnTheDocument(WidgetTester tester) async {
+  final gesture = await tester.startGesture(tester.getRect(find.byType(SuperEditor)).center);
+  for (int i = 0; i < 10; i += 1) {
+    await gesture.moveBy(const Offset(0, -12));
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+  await gesture.up();
+  await _settleSuggestionPopover(tester);
+}
+
+/// The scroll offset of the editor's viewport.
+double _documentScrollOffset(WidgetTester tester) =>
+    tester.state<ScrollableState>(find.byType(Scrollable).first).position.pixels;
 
 /// Pumps the handful of frames the suggestion overlay needs to settle.
 ///

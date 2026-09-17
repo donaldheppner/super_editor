@@ -1691,6 +1691,43 @@ measurement:
   third route on both: it never reaches the tap handler at all, and it is the toolbar's own
   document listener in `spelling_error_suggestion_overlay.dart` that allows handles again.
 
+**The Android handler has no `onPanStart`, and that is deliberate (NOTE-183).** iOS overrides
+`ContentTapDelegate.onPanStart` to hide the popover when a drag begins; Android overrides only
+`onTap` and `onDoubleTap`. Two independent reasons, both measured on the NOTE-181 fixtures.
+First, `AndroidDocumentTouchInteractor` never consults `contentTapHandlers` for a pan at all — it
+calls them for `onTap`, `onDoubleTap` and `onTripleTap` only, and
+`document_gestures_touch_ios.dart` is the one interactor in either package that routes
+`onPanStart`/`onPanUpdate`/`onPanEnd`/`onPanCancel` to them. A temporary counter on an Android
+`onPanStart` override recorded **0 calls** across five gesture variants — including a long-press
+drag with no popover up that did expand the selection to `1: [0, 10]`, so the gesture happened
+and the interactor simply never asked. An override there would be dead code, not a fix. Second,
+the `ModalBarrier` (`spelling_error_suggestion_overlay.dart`, the Android branch of
+`_buildToolbarPositioner`, `dismissible: true`) absorbs the drag before it reaches the document:
+with the popover up, a 120px upward drag left the scroll offset at **0.0**, the selection at
+`1: [0, 4]`, the popover showing and `areSelectionHandlesAllowed` false — whether the drag
+started on the mis-spelled word or elsewhere — while the identical drag with no popover up
+scrolled **96.0**. A pan past `kTouchSlop` is not a tap, so the barrier's
+`_AnyTapGestureRecognizer` rejects in the arena and its `onDismiss` does not run either; the
+gesture is just consumed. Net effect on Android: the popover stays until the user lifts and taps,
+and nothing underneath it moves. Recorded as a doc comment on
+`SuperEditorAndroidSpellCheckerTapHandler` and pinned by a test, *swallows a drag rather
+than dismissing the popover*, which asserts nothing moved and then repeats the same drag with the
+popover gone to prove the fixture really can scroll; with the barrier removed it fails
+`Expected: <0.0> Actual: <96.0>`, and NOTE-181's Android *dismissed* test fails alongside it.
+**iOS is the platform with the gap, and it is upstream's**: iOS hangs no barrier, so the same
+drag scrolled the document **85.17** with the popover left floating over it — and iOS's own
+`onPanStart` did not fire, because both interactors gate that recognizer behind an
+`EagerPanGestureRecognizer.shouldAccept` that is true only when the touch went down over a
+selection handle's hit area or during a long press, and this drag began over neither. (Not because
+the popover has prevented the handles: the iOS hit areas are derived from the selection's rect and
+ignore the veto. NOTE-184, at the end of this section, measured a pan that begins at the
+mis-spelled word's *edge* with the popover up: `onPanStart` fired, the popover hid, the veto
+lifted and the user dragged a visible handle, extent 4 → 11.) So the iOS override is live on the
+long-press route (measured: it fired, and hid the popover) and on a pan that begins at the
+selection's edge (NOTE-184's measurement), and is not reached by a plain drag that begins anywhere
+else, which scrolls the document with the popover still up. Left alone here — that is a
+`super_editor` iOS-interactor question, not a spellcheck one.
+
 NOTE-181's own sensitivity, one call commented out at a time (line numbers at fork `e5fa2c7a`),
 all seven tests green before each:
 

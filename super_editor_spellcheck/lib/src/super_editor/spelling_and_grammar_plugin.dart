@@ -890,6 +890,25 @@ class SuperEditorIosSpellCheckerTapHandler extends _SpellCheckerContentTapDelega
 ///
 /// When the suggestions popover is displayed, the selection and the composing region
 /// expand to the whole word and the selection handles are hidden.
+///
+/// Unlike [SuperEditorIosSpellCheckerTapHandler], this handler deliberately does *not* override
+/// [ContentTapDelegate.onPanStart] to dismiss the popover when a drag begins. Two independent
+/// reasons, both measured (MemNote NOTE-183):
+///
+///  * `AndroidDocumentTouchInteractor` never consults `contentTapHandlers` for a pan. It calls
+///    them for `onTap`, `onDoubleTap` and `onTripleTap` only, and
+///    `document_gestures_touch_ios.dart` is the one interactor in the repo that routes
+///    `onPanStart`/`onPanUpdate`/`onPanEnd`/`onPanCancel` to them. An override here would never
+///    be invoked - it would be dead code, not a fix.
+///  * While the popover is up, [SpellingErrorSuggestionOverlay] hangs an opaque, dismissible
+///    [ModalBarrier] over the document - on Android only. It absorbs the hit test, so a drag
+///    reaches neither the interactor nor the enclosing `Scrollable`: the popover stays put, the
+///    selection doesn't move, and the document can't be scrolled until the user lifts and taps.
+///    A pan past `kTouchSlop` isn't a tap either, so the barrier's own `onDismiss` doesn't run.
+///
+/// Pinned by "swallows a drag rather than dismissing the popover" in
+/// `test/spellcheck_mobile_popover_handles_test.dart`, so if that barrier ever goes away this
+/// question reopens loudly rather than silently.
 class SuperEditorAndroidSpellCheckerTapHandler extends _SpellCheckerContentTapDelegate {
   SuperEditorAndroidSpellCheckerTapHandler({
     required this.popoverController,
