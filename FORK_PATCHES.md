@@ -1538,7 +1538,7 @@ would rebuild the presenter on every build. Sensitivity: the first test verified
 five platform variants before the fix, passing after. Fork suite: 5712 passing, 7 skipped (5702
 before these ten variants, at fork `main` `3034ff3c`).
 
-### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded and collapsed handles (MemNote NOTE-171, NOTE-176, NOTE-181, NOTE-182, NOTE-183, NOTE-184)
+### Android controls overlay: consult `areSelectionHandlesAllowed` for the expanded and collapsed handles (MemNote NOTE-171, NOTE-176, NOTE-181, NOTE-182, NOTE-183, NOTE-184, NOTE-187)
 
 `super_editor/lib/src/default_editor/document_gestures_touch_android.dart`,
 `super_editor/lib/src/chat/super_message_android_overlays.dart`
@@ -1770,7 +1770,9 @@ all seven tests green before each:
 | `spelling_and_grammar_plugin.dart:834`, iOS `preventSelectionHandles()` | all three iOS tests |
 | `spelling_and_grammar_plugin.dart:883`, iOS `_hideSpellCheckerPopover()`'s `allowSelectionHandles()` | iOS *allows handles again when the popover is dismissed* |
 | `spelling_error_suggestion_overlay.dart:923`, iOS toolbar's `allowSelectionHandles()` | iOS *allows handles again when a suggestion is chosen* |
-| `spelling_and_grammar_plugin.dart:937`, Android `onTap`'s pre-timer `allowSelectionHandles()` | Android *recovers handles on the next tap when the popover left them prevented* (NOTE-182; **none** as NOTE-181 shipped) |
+| `spelling_and_grammar_plugin.dart:937` (`:971` after NOTE-187), Android `onTap`'s pre-timer `allowSelectionHandles()` | Android *recovers handles on the next tap when the popover left them prevented* (NOTE-182; **none** as NOTE-181 shipped). Since NOTE-187 the test reaches the stuck state through `SpellCheckerPopoverController.hide()` instead of a cleared selection, and is still the only failure (19 / 1) |
+| `spelling_error_suggestion_overlay.dart:304` (NOTE-187), the overlay's `widget.onSelectionLost?.call()` | four of the five "when the selection goes away >" tests on each platform — all but iOS's long-press one (11 / 9) |
+| `spelling_and_grammar_plugin.dart:1050` / `:890` at NOTE-187, Android / iOS `_hideSpellCheckerPopover()`'s `allowSelectionHandles()` | that platform's *dismissed* test **and** all five of its "when the selection goes away >" tests (14 / 6 each): the selection-loss path runs the same dismissal |
 
 Both prevent mutations are caught by a handle finder rather than by the notifier — the tests
 assert the visible consequence before the mechanism, so a regression reads as "a handle is on
@@ -1815,7 +1817,8 @@ Two more routes reached the same stuck state. One is **closed here**; the other 
   colour-theme swap both do that), the unguarded cascade throws `A ValueNotifier<bool> was used after
   being disposed` before it ever reaches the null check.
 - **Recorded: an app calling `SpellCheckerPopoverController.hide()`**, reachable through the public
-  `contentTapHandlers` getter. Nothing in either repo does it.
+  `contentTapHandlers` getter. Nothing in either repo does it. Since NOTE-187 closed the
+  null-selection route, this is how *recovers handles on the next tap* reaches its starting state.
 
 What was measured *not* to leak: typing while the popover is up (the toolbar's own document listener
 allows handles, and keys do reach the editor past the barrier), two taps on mis-spelled words inside
@@ -1838,7 +1841,142 @@ both. **iOS sticks identically**, and has one recovery route fewer: its `onTap` 
 allow, so a tap on the *mis-spelled* word goes straight to prevent and leaves `allowed` `false`
 (measured), where the same tap on Android recovers. The fix belongs in
 `spelling_error_suggestion_overlay.dart`'s hide path, not in the tap handler, so NOTE-182 left it as
-a reported finding rather than widening its diff.
+a reported finding rather than widening its diff. **NOTE-187 closed it** — see the next paragraphs.
+
+**NOTE-187: losing the selection now runs the dismissal.** The overlay's selection listener
+(`_SpellingErrorSuggestionOverlayState._onSelectionChange`) now notices the selection going `null`
+while `_currentSpellingSuggestions` is set, and then (a) forgets the suggestions and the dismiss
+callback itself, via its own `hideSuggestionsPopover()`, and (b) calls a new optional
+`SpellingErrorSuggestionOverlay.onSelectionLost` (also on `SpellingErrorSuggestionOverlayBuilder`).
+`SpellingAndGrammarPlugin` wires that to a new `hidePopover()` on its tap handler, which every
+handler implements as its existing `_hideSpellCheckerPopover()` — so a lost selection runs exactly
+the cleanup a tap away runs: allow handles, restore the default selection colour, and
+`popoverController.hide()`, which also resets `isShowing`. The decisions:
+
+- **The listener, not `computeLayoutDataWithDocumentLayout`.** That method is called from
+  `ContentLayerState.build`, on every rebuild, and is skipped while the content needs layout;
+  `allowSelectionHandles()` notifies `ValueListenableBuilder`s elsewhere in the tree, which is not
+  something to do from inside a build, and once-per-change is what the cleanup wants. The early
+  return there is unchanged and now carries a comment pointing at the listener.
+- **The tap handler's dismissal, not an `allowSelectionHandles()` in the overlay.** The toolbars'
+  own document listeners reach the controller through `SuperEditor*ControlsScope.rootOf(context)`,
+  and the overlay could have done the same — but that allows handles and nothing else. The lost
+  selection also left the styler's selection-colour override on (Android's default is
+  `Colors.red.withValues(alpha: 0.3)`) and `popoverController.isShowing` `true`, and only the tap
+  handler owns those. Running its dismissal is the "same cleanup a dismissal runs" the ticket asked
+  for, rather than a third partial copy of it.
+- **The Android dismiss callback is deliberately not called.** `_onDismissToolbar` restores the
+  caret to the tap position; running it would undo the very selection change that closed the
+  popover. It is cleared instead.
+- **All platforms, not only mobile.** The state being cleared is the overlay's and is not
+  platform-specific; on desktop the effect is only that a popover no longer comes back by itself
+  when a cleared selection is restored (the desktop handler's dismissal is `popoverController.hide()`
+  alone). No desktop test exists for this and none was added; nothing in `super_editor_spellcheck`'s
+  suite moved.
+- **The overlay's own `hideSuggestionsPopover()` call is belt-and-braces**: with the plugin's
+  callback wired, `popoverController.hide()` does the same thing, so commenting it out fails no test
+  (20 / 0). It is there for an overlay used without the plugin, where `onSelectionLost` is `null`.
+
+The other two early returns in `computeLayoutDataWithDocumentLayout`, checked rather than assumed:
+
+- **Missing component** (`getComponentByNodeId(...) == null`) is not a leak. It keeps
+  `_currentSpellingSuggestions` on purpose so the popover comes back on the next layout, and while
+  the popover is logically up, prevented handles are the right state. The way the component goes
+  away for good is a document change, which `_onDocumentChange` and the toolbar's own document
+  listener already handle.
+- **`_ignoredSpellingErrorRange`** *is* the same leak, but unreachable from MemNote. It is set only by
+  `_onCancelPressed`, which only the desktop toolbar wires to a button; the default Android and iOS
+  toolbars don't take `onCancelPressed` at all. Measured with a custom Android `toolbarBuilder` whose
+  button calls it: toolbar gone, `areSelectionHandlesAllowed` still `false`, selection still the word
+  — and moving the caret to a correctly-spelled word and back brought the toolbar back over the
+  mis-spelled word, handles still prevented, because cancel keeps `_currentSpellingSuggestions` by
+  design (the desktop "re-appears when the selection moves away and back" behaviour). Making cancel
+  run the mobile dismissal means deciding what cancel means on mobile, so it is left alone and
+  recorded. MemNote passes no `toolbarBuilder` (`super_note_editor_panel.dart`).
+
+**The device observation (NOTE-187 step 1), on fork `8cf89a0c` unfixed.** The fork's
+`super_editor_spellcheck/example` still cannot build for Android here, so this used NOTE-183's
+recipe: a scratch `flutter create` app outside both repos, path-depending on this checkout's
+`super_editor` / `super_editor_spellcheck` / `super_text_layout`, an app-owned
+`SuperEditorAndroidControlsScope`, a fake `SpellCheckService` (two mis-spelled words), MemNote's
+subproject `compileSdk` override, and an on-screen HUD for `areSelectionHandlesAllowed`, the
+selection, `popoverController.isShowing` and focus. `Pixel_9_Pro` AVD, API 36. Because the
+`ModalBarrier` dismisses the popover on any tap, focus changes were scheduled from HUD buttons
+pressed *before* opening the popover, firing 3s later.
+
+- **Dismissing the soft keyboard does not reach it.** System back with the popover and keyboard up:
+  the keyboard went away, and the selection (`1: [38, 46]`), focus, popover and veto all stayed
+  exactly as they were. Android hides the keyboard without closing the input connection, so
+  `clearSelectionWhenImeConnectionCloses` never fires. Backgrounding the app (Home, then back) is the
+  same: lifecycle `inactive → hidden → paused → … → resumed`, selection and popover untouched.
+  (In widget tests the engine's own `onConnectionClosed` — `tester.testTextInput.closeConnection()`
+  — doesn't clear the selection either, because `DocumentImeInputClient.connectionClosed` only logs;
+  the IME-close test therefore closes through `SoftwareKeyboardController.close()`, the route
+  upstream's own test of that policy uses.)
+- **Moving focus away does.** `FocusNode.unfocus()` with the popover up: selection `null`, popover
+  gone, `allowed == false`, `isShowing == true`. Stuck, as NOTE-182 measured.
+- **A long press while stuck is worse on a device than in the widget test.** On "sentence": selection
+  `1: [22, 30]`, no handles, the word painted in the popover's red override colour — and **the old
+  popover for "mispeled" came back**, hanging off a word that is not selected, because a non-null
+  selection is all `computeLayoutDataWithDocumentLayout` needed to re-show the suggestions it still
+  held.
+- **Regaining focus brings the popover back**: `requestFocus()` restored `1: [38, 46]` and the old
+  popover reappeared over it with handles prevented.
+- **With the fix** (same harness rebuilt): unfocus → `allowed` `true`, `isShowing` `false`, popover
+  gone; the long press then drew both expanded handles in the default selection colour with no
+  popover; refocus restored `1: [38, 46]` with no popover and default colour. Choosing a suggestion
+  afterwards still replaced the word and allowed handles (caret at `1: 48`).
+
+**How reachable it is.** On Android, in practice, only code moves focus while the popover is up: the
+barrier swallows every pointer, and the two routes the ticket expected — the keyboard going away and
+the app being backgrounded — measured as not clearing the selection. MemNote's `flutter/lib` calls
+neither `SoftwareKeyboardController.close()` nor `unfocus()` on the editor's focus node, so on an
+Android phone it needs something like a dialog or route taking focus over a still-mounted editor.
+iOS hangs no barrier, so a tap on any other focusable widget moves focus by pointer, which should make
+it the platform where this is ordinary; that is reasoning, not measurement — this machine has no
+iOS device or simulator. Upstream defect, and a plausible upstream candidate together with its tests
+(it is upstream's own overlay and plugin); not submitted — that is Don's call.
+
+**One thing the tests taught that the ticket didn't say: an iOS long press is a recovery route.**
+`IosDocumentTouchInteractor`'s `TapSequenceGestureRecognizer` still delivers the tap-up after a long
+press, so `SuperEditorIosSpellCheckerTapHandler.onTap` runs and, on a correctly-spelled word, calls
+`_hideSpellCheckerPopover()` (traced with a stack-printing probe; `onPanStart` did not fire). So
+iOS's *draws the handles of a long-press selection made afterwards* passes on unfixed code; it is
+kept as a guard that the fix leaves that route working, and is the one "when the selection goes
+away >" test not in the sensitivity table's NOTE-187 row.
+
+Tests: `super_editor_spellcheck/test/spellcheck_mobile_popover_handles_test.dart`, a new
+"when the selection goes away >" group registered on both platforms by `_selectionLossTests`, five
+tests each — *allows handles again* (`ClearSelectionRequest`), *... when the editor loses focus*
+(a real `FocusNode.unfocus()`, asserting the policy cleared the selection), *... when the IME
+connection closes* (`SoftwareKeyboardController.close()`), *doesn't bring the old popover back when
+the selection does* (unfocus, `requestFocus()` restores the word selection, then a programmatic caret
+on a correctly-spelled word), and *draws the handles of a long-press selection made afterwards*
+(2 expanded handles, and on Android a selection colour that is not the popover's). The first three
+also assert `popoverController.isShowing == false`. NOTE-182's *recovers handles on the next tap*
+asserted the stuck state as its premise and failed once the leak was closed (`allowed` `true` where
+it expected `false`); its premise was **rewritten, not removed** — it now strands the handles through
+an app calling `hide()` on the tap handler's public `popoverController`, the route NOTE-182 recorded
+below, so the pre-timer call keeps a test. Fails without the fix: with `lib/` at fork `main`
+(`8cf89a0c`) the file goes **11 passing / 9 failing** — the nine are all ten new tests except iOS's
+long-press one. `super_editor_spellcheck`: **20 passing before, 30 after**; `flutter analyze` in the
+package still reports only the pre-existing `unnecessary_import` info in `spellcheck_timing_test.dart`,
+and all three edited files are `dart format --line-length=120` clean. The `super_editor` package is
+untouched.
+
+**Found while measuring, not fixed here** — both pre-existing, both on exits other than a lost
+selection:
+
+- **Choosing a suggestion leaves the selection-colour override on and `isShowing` `true`.** The
+  toolbar's document listener allows handles and calls `closeToolbar` (the overlay's
+  `hideSuggestionsPopover()`), which is neither the tap handler's dismissal nor
+  `popoverController.hide()`. Seen on the device: after choosing "misspelled", a long press on
+  "sentence" drew its handles fine but in the popover's red. On iOS the stale `isShowing` only makes
+  the next `onPanStart` run a redundant dismissal.
+- **The selection moving off the word without going `null` leaves the popover up.** Measured in a
+  widget test on Android: popover up, ten hardware right-arrow presses (keys reach the editor past
+  the barrier) moved the caret to `1: 13` with the toolbar still showing over the old word and handles
+  still prevented.
 
 NOTE-182 also removed the duplicated `hideToolbar()` from that cascade: it read
 `..hideToolbar() ..hideMagnifier() ..hideToolbar() ..preventSelectionHandles()`, where the iOS
