@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -146,23 +147,25 @@ void main() {
       testWidgetsOnAndroid("recovers handles on the next tap when the popover left them prevented", (tester) async {
         // The recovery path, and the only thing that exercises Android onTap's pre-timer
         // allowSelectionHandles(). A popover can go away without either of the two calls
-        // that allow handles running: the overlay hides its toolbar from
-        // computeLayoutDataWithDocumentLayout whenever the selection is null, which is
-        // neither _hideSpellCheckerPopover() nor the toolbar's document listener. Losing
-        // the selection is ordinary on Android - SuperEditorSelectionPolicies clears it
-        // when the editor loses focus and when the IME connection closes, both by default
-        // - so the editor can be left with handles prevented and no popover, and the
-        // pre-timer call is what un-sticks the next tap on a mis-spelled word.
+        // that allow handles running, and when it does the editor is left with handles
+        // prevented and no popover; the pre-timer call is what un-sticks the next tap on a
+        // mis-spelled word.
+        //
+        // NOTE-182 reached that state by clearing the selection, which was the ordinary way
+        // in until NOTE-187 closed it (see "when the selection goes away >" below). The route
+        // left is an app hiding the popover through the tap handler's public
+        // SpellCheckerPopoverController, reachable from the plugin's contentTapHandlers: hide()
+        // only tells the overlay to forget its suggestions, and nothing allows handles.
         final controlsController = SuperEditorAndroidControlsController();
         addTearDown(controlsController.dispose);
-        final editor = await _pumpSpellcheckEditor(tester, androidControlsController: controlsController);
+        final plugin = _createSpellcheckPlugin(androidControlsController: controlsController);
+        await _pumpSpellcheckEditor(tester, androidControlsController: controlsController, plugin: plugin);
 
         await _placeCaretOnACorrectlySpelledWord(tester);
         await _tapMisspelledWord(tester);
         expect(controlsController.areSelectionHandlesAllowed.value, isFalse);
 
-        // Clear the selection, exactly as those two policies do.
-        editor.execute([const ClearSelectionRequest()]);
+        _popoverControllerOf(plugin).hide();
         await _settleSuggestionPopover(tester);
 
         // The popover is gone and nothing allowed handles again.
@@ -264,6 +267,8 @@ void main() {
 
         controlsController.cancelCollapsedHandleAutoHideCountdown();
       });
+
+      _selectionLossTests(testWidgetsOnAndroid);
     });
 
     group("on iOS >", () {
@@ -322,9 +327,144 @@ void main() {
         expect(controlsController.areSelectionHandlesAllowed.value, isTrue);
         expect(SuperEditorInspector.findMobileCaretDragHandle(), findsOneWidget);
       });
+
+      _selectionLossTests(testWidgetsOnIos);
     });
   });
 }
+
+/// The selection going away while the popover is up (MemNote NOTE-187), registered once per
+/// mobile platform with that platform's runner.
+///
+/// The overlay hides its toolbar whenever the selection is null, and that used to be the
+/// popover's one exit that ran no cleanup: neither the tap handler's `_hideSpellCheckerPopover()`
+/// nor the toolbar's own document listener, so selection handles stayed prevented, the
+/// overlay kept the suggestions it was showing, and the popover controller still said it was
+/// showing. A null selection is ordinary on both platforms - `SuperEditorSelectionPolicies`
+/// clears it when the editor loses focus and when the IME connection closes, both by default -
+/// and neither route is a pointer, so Android's `ModalBarrier` can't absorb it.
+void _selectionLossTests(void Function(String description, WidgetTesterCallback test) testWidgetsOnPlatform) {
+  group("when the selection goes away >", () {
+    testWidgetsOnPlatform("allows handles again", (tester) async {
+      final popover = await _pumpWithPopoverUp(tester);
+
+      popover.editor.execute([const ClearSelectionRequest()]);
+      await _settleSuggestionPopover(tester);
+
+      expect(_findSuggestionToolbar(), findsNothing);
+      expect(popover.handlesAllowed.value, isTrue);
+      expect(popover.popoverController.isShowing, isFalse);
+
+      popover.finish();
+    });
+
+    testWidgetsOnPlatform("allows handles again when the editor loses focus", (tester) async {
+      final popover = await _pumpWithPopoverUp(tester);
+
+      popover.focusNode.unfocus();
+      await _settleSuggestionPopover(tester);
+
+      // clearSelectionWhenEditorLosesFocus did this, not the test.
+      expect(SuperEditorInspector.findDocumentSelection(), isNull);
+      expect(_findSuggestionToolbar(), findsNothing);
+      expect(popover.handlesAllowed.value, isTrue);
+      expect(popover.popoverController.isShowing, isFalse);
+
+      popover.finish();
+    });
+
+    testWidgetsOnPlatform("allows handles again when the IME connection closes", (tester) async {
+      final popover = await _pumpWithPopoverUp(tester);
+
+      // Closed the way an app closes it, which is the route upstream's own test of this policy
+      // takes ("SuperEditor software keyboard > in automatic control mode > clears selection
+      // when it closes"). The engine's own onConnectionClosed - tester.testTextInput
+      // .closeConnection() - doesn't get this far: DocumentImeInputClient.connectionClosed only
+      // logs, so the policy never sees the connection close and the selection stays.
+      expect(popover.softwareKeyboardController.isConnectedToIme, isTrue);
+      popover.softwareKeyboardController.close();
+      await _settleSuggestionPopover(tester);
+
+      // clearSelectionWhenImeConnectionCloses did this, not the test.
+      expect(SuperEditorInspector.findDocumentSelection(), isNull);
+      expect(_findSuggestionToolbar(), findsNothing);
+      expect(popover.handlesAllowed.value, isTrue);
+      expect(popover.popoverController.isShowing, isFalse);
+
+      popover.finish();
+    });
+
+    testWidgetsOnPlatform("doesn't bring the old popover back when the selection does", (tester) async {
+      final popover = await _pumpWithPopoverUp(tester);
+      final wordSelection = SuperEditorInspector.findDocumentSelection();
+
+      popover.focusNode.unfocus();
+      await _settleSuggestionPopover(tester);
+      expect(SuperEditorInspector.findDocumentSelection(), isNull);
+
+      // Regaining focus restores the previous selection - the mis-spelled word - without a tap,
+      // so nothing consults the tap handler. The overlay used to still hold that word's
+      // suggestions, and showed them again with handles still prevented.
+      popover.focusNode.requestFocus();
+      await _settleSuggestionPopover(tester);
+
+      expect(SuperEditorInspector.findDocumentSelection(), wordSelection);
+      expect(_findSuggestionToolbar(), findsNothing);
+      expect(popover.handlesAllowed.value, isTrue);
+
+      // It came back with the caret on a correctly-spelled word, too.
+      popover.editor.execute([
+        const ChangeSelectionRequest(
+          DocumentSelection.collapsed(
+            position: DocumentPosition(
+              nodeId: "1",
+              nodePosition: TextNodePosition(offset: _correctlySpelledWordOffset),
+            ),
+          ),
+          SelectionChangeType.placeCaret,
+          SelectionReason.userInteraction,
+        ),
+      ]);
+      await _settleSuggestionPopover(tester);
+
+      expect(_findSuggestionToolbar(), findsNothing);
+      expect(popover.handlesAllowed.value, isTrue);
+
+      popover.finish();
+    });
+
+    testWidgetsOnPlatform("draws the handles of a long-press selection made afterwards", (tester) async {
+      // A long press never consults the content tap handlers, so it can't reach
+      // _hideSpellCheckerPopover() the way a tap or double-tap does. While handles stayed
+      // prevented, it landed a real selection with nothing drawn on it: no caret, no handles.
+      final popover = await _pumpWithPopoverUp(tester);
+
+      popover.editor.execute([const ClearSelectionRequest()]);
+      await _settleSuggestionPopover(tester);
+
+      await tester.longPressInParagraph("1", _correctlySpelledWordOffset);
+      await _settleSuggestionPopover(tester);
+
+      final selection = SuperEditorInspector.findDocumentSelection();
+      expect(selection, isNotNull);
+      expect(selection!.isCollapsed, isFalse);
+      expect(popover.handlesAllowed.value, isTrue);
+      expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNWidgets(2));
+
+      // The popover's selection colour went with it. Only Android sets one by default.
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        expect(tester.widget<TextComponent>(find.byType(TextComponent)).selectionColor,
+            isNot(_androidPopoverSelectionColor));
+      }
+
+      popover.finish();
+    });
+  });
+}
+
+/// The selection colour `SpellingAndGrammarPlugin` uses on Android, by default, while the
+/// popover is up.
+final _androidPopoverSelectionColor = Colors.red.withValues(alpha: 0.3);
 
 /// Pumps a [SuperEditor] with a [SpellingAndGrammarPlugin] beneath an app-owned mobile
 /// controls scope, and waits for the initial spell check to underline [_paragraphText].
@@ -337,11 +477,18 @@ void main() {
 /// `super_editor/test/super_editor/mobile/super_editor_android_overlay_controls_test.dart`.
 /// Pass a non-zero [fillerParagraphCount] to append that many throwaway paragraphs after the
 /// spell-checked one, which is how a test gets a document tall enough to scroll.
+///
+/// Pass a [plugin] to get hold of the one the editor uses (see [_createSpellcheckPlugin]), and a
+/// [focusNode] to move the editor's focus by hand, and a [softwareKeyboardController] to close
+/// the IME connection the way an app does.
 Future<Editor> _pumpSpellcheckEditor(
   WidgetTester tester, {
   SuperEditorAndroidControlsController? androidControlsController,
   SuperEditorIosControlsController? iosControlsController,
   int fillerParagraphCount = 0,
+  SpellingAndGrammarPlugin? plugin,
+  FocusNode? focusNode,
+  SoftwareKeyboardController? softwareKeyboardController,
 }) async {
   final editor = createDefaultDocumentEditor(
     document: MutableDocument(
@@ -354,13 +501,17 @@ Future<Editor> _pumpSpellcheckEditor(
     composer: MutableDocumentComposer(),
   );
 
-  final plugin = SpellingAndGrammarPlugin(
+  plugin ??= _createSpellcheckPlugin(
     androidControlsController: androidControlsController,
     iosControlsController: iosControlsController,
-    spellCheckService: _FakeSpellChecker(),
   );
 
-  final superEditor = SuperEditor(editor: editor, plugins: {plugin});
+  final superEditor = SuperEditor(
+    editor: editor,
+    focusNode: focusNode,
+    softwareKeyboardController: softwareKeyboardController,
+    plugins: {plugin},
+  );
 
   await tester.pumpWidget(
     MaterialApp(
@@ -378,6 +529,117 @@ Future<Editor> _pumpSpellcheckEditor(
   await tester.pump();
 
   return editor;
+}
+
+/// Creates the [SpellingAndGrammarPlugin] these tests attach, checking spelling with
+/// [_FakeSpellChecker].
+SpellingAndGrammarPlugin _createSpellcheckPlugin({
+  SuperEditorAndroidControlsController? androidControlsController,
+  SuperEditorIosControlsController? iosControlsController,
+}) {
+  return SpellingAndGrammarPlugin(
+    androidControlsController: androidControlsController,
+    iosControlsController: iosControlsController,
+    spellCheckService: _FakeSpellChecker(),
+  );
+}
+
+/// The [SpellCheckerPopoverController] the [plugin]'s mobile tap handler shows and hides the
+/// popover through.
+SpellCheckerPopoverController _popoverControllerOf(SpellingAndGrammarPlugin plugin) {
+  return switch (plugin.contentTapHandlers.single) {
+    SuperEditorAndroidSpellCheckerTapHandler(:final popoverController) => popoverController,
+    SuperEditorIosSpellCheckerTapHandler(:final popoverController) => popoverController,
+    final handler => throw StateError("No mobile spellcheck tap handler: $handler"),
+  };
+}
+
+/// The suggestions toolbar the platform under test shows.
+Finder _findSuggestionToolbar() => switch (defaultTargetPlatform) {
+      TargetPlatform.android => find.byType(AndroidSpellingSuggestionToolbar),
+      TargetPlatform.iOS => find.byType(IosSpellingSuggestionToolbar),
+      _ => find.byType(DesktopSpellingSuggestionToolbar),
+    };
+
+/// A spellcheck editor with the suggestions popover up over the mis-spelled word, on the
+/// platform under test - see [_pumpWithPopoverUp].
+class _PopoverUp {
+  _PopoverUp({
+    required this.editor,
+    required this.plugin,
+    required this.focusNode,
+    required this.softwareKeyboardController,
+    required this.handlesAllowed,
+    this.androidControlsController,
+  });
+
+  final Editor editor;
+  final SpellingAndGrammarPlugin plugin;
+  final FocusNode focusNode;
+  final SoftwareKeyboardController softwareKeyboardController;
+
+  /// The `areSelectionHandlesAllowed` notifier of the controls controller the plugin was
+  /// handed, whichever platform that is.
+  final ValueListenable<bool> handlesAllowed;
+
+  final SuperEditorAndroidControlsController? androidControlsController;
+
+  SpellCheckerPopoverController get popoverController => _popoverControllerOf(plugin);
+
+  /// Ends the test without a pending `Timer`: on Android, placing a caret starts the collapsed
+  /// handle's auto-hide countdown (see "hides every handle while the popover is up").
+  void finish() => androidControlsController?.cancelCollapsedHandleAutoHideCountdown();
+}
+
+/// Pumps a spellcheck editor for the platform under test, places a caret on a correctly-spelled
+/// word, taps the mis-spelled one, and checks the popover is up with handles prevented - the
+/// starting point of every "selection goes away" test.
+Future<_PopoverUp> _pumpWithPopoverUp(WidgetTester tester) async {
+  final focusNode = FocusNode();
+  addTearDown(focusNode.dispose);
+  final softwareKeyboardController = SoftwareKeyboardController();
+
+  SuperEditorAndroidControlsController? androidControlsController;
+  SuperEditorIosControlsController? iosControlsController;
+  late final ValueListenable<bool> handlesAllowed;
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    androidControlsController = SuperEditorAndroidControlsController();
+    addTearDown(androidControlsController.dispose);
+    handlesAllowed = androidControlsController.areSelectionHandlesAllowed;
+  } else {
+    iosControlsController = SuperEditorIosControlsController();
+    addTearDown(iosControlsController.dispose);
+    handlesAllowed = iosControlsController.areSelectionHandlesAllowed;
+  }
+
+  final plugin = _createSpellcheckPlugin(
+    androidControlsController: androidControlsController,
+    iosControlsController: iosControlsController,
+  );
+  final editor = await _pumpSpellcheckEditor(
+    tester,
+    androidControlsController: androidControlsController,
+    iosControlsController: iosControlsController,
+    plugin: plugin,
+    focusNode: focusNode,
+    softwareKeyboardController: softwareKeyboardController,
+  );
+
+  await _placeCaretOnACorrectlySpelledWord(tester);
+  await _tapMisspelledWord(tester);
+
+  expect(_findSuggestionToolbar(), findsOneWidget);
+  expect(handlesAllowed.value, isFalse);
+  expect(_popoverControllerOf(plugin).isShowing, isTrue);
+
+  return _PopoverUp(
+    editor: editor,
+    plugin: plugin,
+    focusNode: focusNode,
+    softwareKeyboardController: softwareKeyboardController,
+    handlesAllowed: handlesAllowed,
+    androidControlsController: androidControlsController,
+  );
 }
 
 /// Taps a correctly-spelled word, which focuses the editor and leaves a caret drag handle on

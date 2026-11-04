@@ -14,6 +14,7 @@ class SpellingErrorSuggestionOverlayBuilder implements SuperEditorLayerBuilder {
     this.selectedWordLink, {
     this.toolbarBuilder = defaultSpellingSuggestionToolbarBuilder,
     required this.popoverController,
+    this.onSelectionLost,
   });
 
   final SpellingErrorSuggestions suggestions;
@@ -27,6 +28,9 @@ class SpellingErrorSuggestionOverlayBuilder implements SuperEditorLayerBuilder {
   /// showing/hiding the spelling suggestions popover.
   final SpellCheckerPopoverController popoverController;
 
+  /// See [SpellingErrorSuggestionOverlay.onSelectionLost].
+  final VoidCallback? onSelectionLost;
+
   @override
   ContentLayerWidget build(BuildContext context, SuperEditorContext editContext) {
     return SpellingErrorSuggestionOverlay(
@@ -36,6 +40,7 @@ class SpellingErrorSuggestionOverlayBuilder implements SuperEditorLayerBuilder {
       selectedWordLink: selectedWordLink,
       toolbarBuilder: toolbarBuilder,
       popoverController: popoverController,
+      onSelectionLost: onSelectionLost,
     );
   }
 }
@@ -49,6 +54,7 @@ class SpellingErrorSuggestionOverlay extends DocumentLayoutLayerStatefulWidget {
     required this.selectedWordLink,
     this.toolbarBuilder = defaultSpellingSuggestionToolbarBuilder,
     this.popoverController,
+    this.onSelectionLost,
     this.showDebugLeaderBounds = false,
   });
 
@@ -72,6 +78,24 @@ class SpellingErrorSuggestionOverlay extends DocumentLayoutLayerStatefulWidget {
   /// A controller to which this overlay will attach itself as the delegate for
   /// showing/hiding the spelling suggestions popover.
   final SpellCheckerPopoverController? popoverController;
+
+  /// Called after the popover closes because the document selection went away while it was
+  /// up, rather than through [popoverController] or a dismissal.
+  ///
+  /// A selection going `null` is ordinary - by default `SuperEditor` clears it when the editor
+  /// loses focus and when the IME connection closes - and it reaches neither the code that shows
+  /// the popover nor the code that dismisses it. This overlay already forgets the suggestions it
+  /// was showing; this callback is for whatever the showing side set up alongside them.
+  /// [SpellingAndGrammarPlugin] uses it to run its tap handler's ordinary dismissal, which on
+  /// Android and iOS allows the selection handles the popover prevented and restores the default
+  /// selection color. Without that, the handles stayed prevented after the popover was gone, so
+  /// a selection made by a route that skips the tap handler - a long press on Android - had
+  /// nothing drawn on it (MemNote NOTE-187).
+  ///
+  /// The dismiss callback given to [SpellCheckerPopoverController.showSuggestions] is
+  /// deliberately *not* run: on Android it restores the selection to where the user tapped,
+  /// which would undo the very selection change that closed the popover.
+  final VoidCallback? onSelectionLost;
 
   /// Whether to paint colorful bounds around the leader widgets, for debugging purposes.
   final bool showDebugLeaderBounds;
@@ -213,6 +237,10 @@ class _SpellingErrorSuggestionOverlayState
       return;
     }
 
+    if (widget.editor.context.composer.selection == null && _currentSpellingSuggestions != null) {
+      _onSelectionLostWhilePopoverIsUp();
+    }
+
     setState(() {
       // Re-compute layout data. The layout needs to be re-computed regardless
       // of any conditions that follow this comment.
@@ -259,6 +287,23 @@ class _SpellingErrorSuggestionOverlayState
     });
   }
 
+  /// Closes the popover for good when the selection it was about goes away, and lets the side
+  /// that showed it clean up after it - see [SpellingErrorSuggestionOverlay.onSelectionLost].
+  ///
+  /// [computeLayoutDataWithDocumentLayout] already hides the toolbar whenever the selection is
+  /// `null`, but that only takes it off screen. It used to leave [_currentSpellingSuggestions]
+  /// and [_onDismissToolbar] set, so restoring a selection by any route other than a tap -
+  /// regaining focus restores the previous one - brought the old popover straight back, and it
+  /// told nobody, so the selection handles the popover prevented stayed prevented.
+  ///
+  /// This runs from the selection listener rather than from that layout method because it
+  /// notifies listeners - the controls controller's `areSelectionHandlesAllowed` among them -
+  /// and the layout method runs inside `build`, and on every build, rather than once per change.
+  void _onSelectionLostWhilePopoverIsUp() {
+    hideSuggestionsPopover();
+    widget.onSelectionLost?.call();
+  }
+
   void _onDocumentChange(DocumentChangeLog changeLog) {
     if (!mounted) {
       return;
@@ -303,6 +348,8 @@ class _SpellingErrorSuggestionOverlayState
 
     if (widget.editor.context.composer.selection == null) {
       // There can't be any spelling suggestions because there's no selection. Fizzle.
+      // This only hides the toolbar - _onSelectionLostWhilePopoverIsUp() is what closes the
+      // popover for good and allows selection handles again.
       return null;
     }
 
