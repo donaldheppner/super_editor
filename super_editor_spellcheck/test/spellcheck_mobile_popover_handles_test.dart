@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_test_robots/flutter_test_robots.dart';
 import 'package:flutter_test_runners/flutter_test_runners.dart';
 import 'package:super_editor/super_editor.dart';
 import 'package:super_editor/super_editor_test.dart';
@@ -25,6 +26,19 @@ const _misspelledWordMiddle = (_misspelledWordStart + _misspelledWordEnd) ~/ 2;
 const _suggestions = ["Hello", "Hallo"];
 
 const _correctedParagraphText = "Hello world, this is a sentence.";
+
+/// A text offset in "this" - well clear of the mis-spelled word, and not inside it.
+const _offsetOffTheWord = 13;
+
+/// The optional second paragraph (see `_pumpSpellcheckEditor`'s `secondMisspelledParagraph`). It
+/// starts with the same mis-spelled word, at the same offsets, so it is a second word to tap - and
+/// its errors outlive a correction made in the first paragraph, so its text component keeps
+/// showing whatever selection colour the plugin's styler is set to.
+const _secondParagraphId = "2";
+const _secondParagraphText = "Hllo again.";
+
+/// A text offset inside "again", a correctly-spelled word in the second paragraph.
+const _secondParagraphCorrectlySpelledOffset = 7;
 
 void main() {
   group("SuperEditor spellcheck > mobile suggestion popover > selection handles >", () {
@@ -269,6 +283,24 @@ void main() {
       });
 
       _selectionLossTests(testWidgetsOnAndroid);
+      _suggestionChosenTests(testWidgetsOnAndroid);
+      _selectionMovedTests(testWidgetsOnAndroid);
+
+      testWidgetsOnAndroid("Delete runs the same cleanup, and leaves the caret where the word was", (tester) async {
+        // Android's toolbar has a "Delete" button as well as the suggestions. It removes the word
+        // outright, so the text after it shifts left - which is the case where restoring the tap
+        // position (the Android dismiss callback) would land the caret inside a different word.
+        final popover = await _pumpWithPopoverUp(tester, secondMisspelledParagraph: true);
+
+        await tester.tap(find.widgetWithText(TextButton, "Delete"));
+        await _settleSuggestionPopover(tester);
+
+        expect(_paragraphTextOf(popover.editor), _paragraphText.substring(_misspelledWordEnd));
+        expect(SuperEditorInspector.findDocumentSelection(), _caretAt(_misspelledWordStart));
+        _expectPopoverClosedWithCleanup(tester, popover);
+
+        popover.finish();
+      });
     });
 
     group("on iOS >", () {
@@ -329,9 +361,197 @@ void main() {
       });
 
       _selectionLossTests(testWidgetsOnIos);
+      _suggestionChosenTests(testWidgetsOnIos);
+      _selectionMovedTests(testWidgetsOnIos);
+      _tapAnotherMisspelledWordTest(testWidgetsOnIos);
+    });
+  });
+
+  group("SuperEditor spellcheck > desktop suggestion popover >", () {
+    // MemNote attaches the same plugin on desktop (super_note_editor_panel.dart), where the tap
+    // handler places a caret in the word rather than selecting it, and has no handles to manage.
+    // The popover's exits are the overlay's, though, and are shared: the selection-moved rule in
+    // particular applies on every platform (MemNote NOTE-198).
+    _suggestionChosenTests(testWidgetsOnDesktop);
+    _selectionMovedTests(testWidgetsOnDesktop);
+    _tapAnotherMisspelledWordTest(testWidgetsOnDesktop);
+  });
+}
+
+/// Choosing a suggestion (MemNote NOTE-198), registered once per platform with that platform's
+/// runner.
+///
+/// Choosing a suggestion edits the document, and the popover used to close through the toolbar's
+/// own document listener alone - which allows handles and forgets the suggestions, and nothing
+/// else. So on Android the popover's red selection colour stayed on for the next selection, and
+/// on both mobile platforms the popover controller went on saying it was showing.
+void _suggestionChosenTests(void Function(String description, WidgetTesterCallback test) testWidgetsOnPlatform) {
+  group("when a suggestion is chosen >", () {
+    testWidgetsOnPlatform("runs the same cleanup a dismissal does", (tester) async {
+      final popover = await _pumpWithPopoverUp(tester, secondMisspelledParagraph: true);
+
+      // On desktop this is also the check that the user's own click on a suggestion isn't taken
+      // for the selection leaving the word: if anything closed the popover between pointer-down
+      // and pointer-up, the click would miss and the word would stay mis-spelled.
+      await _chooseSuggestion(tester, _suggestions.first);
+
+      expect(_paragraphTextOf(popover.editor), _correctedParagraphText);
+      _expectPopoverClosedWithCleanup(tester, popover);
+
+      popover.finish();
+    });
+
+    testWidgetsOnPlatform("leaves the caret after the corrected word, not where the user tapped", (tester) async {
+      // Android's tap handler gives the popover a dismiss callback that puts the caret back at the
+      // tap position. Choosing a suggestion must not run it: the word under that position has just
+      // been replaced, so the caret would land mid-way through the correction (or, after a shorter
+      // one, in the next word) and undo where fixMisspelledWord put it.
+      final popover = await _pumpWithPopoverUp(tester);
+
+      await _chooseSuggestion(tester, _suggestions.first);
+
+      expect(SuperEditorInspector.findDocumentSelection(), _caretAt(_suggestions.first.length));
+      expect(_findSuggestionToolbar(), findsNothing);
+
+      popover.finish();
+    });
+
+    if (_isMobileRunner(testWidgetsOnPlatform)) {
+      testWidgetsOnPlatform("draws a later long-press selection in the default colour", (tester) async {
+        // What NOTE-187 saw on a Pixel 9 Pro: after choosing a correction, the next long press
+        // drew its selection in the popover's red.
+        final popover = await _pumpWithPopoverUp(tester, secondMisspelledParagraph: true);
+
+        await _chooseSuggestion(tester, _suggestions.first);
+        await tester.longPressInParagraph(_secondParagraphId, _secondParagraphCorrectlySpelledOffset);
+        await _settleSuggestionPopover(tester);
+
+        final selection = SuperEditorInspector.findDocumentSelection();
+        expect(selection, isNotNull);
+        expect(selection!.isCollapsed, isFalse);
+        expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNWidgets(2));
+        if (defaultTargetPlatform == TargetPlatform.android) {
+          expect(_secondParagraphSelectionColor(tester), isNot(_androidPopoverSelectionColor));
+        }
+
+        popover.finish();
+      });
+    }
+  });
+}
+
+/// The selection moving while the popover is up (MemNote NOTE-198), registered once per platform
+/// with that platform's runner.
+///
+/// The rule: the popover is about one word, so it closes - with the tap handler's ordinary
+/// dismissal - as soon as the selection's base or extent leaves that word, and stays while both
+/// remain inside it (the offset just after the word's last character counts as inside, as it does
+/// for the spell checker's own lookup). Before, only a selection going `null` closed it, so a caret
+/// moved by the keyboard or by code left the toolbar hanging over a word the user had left, with
+/// handles still prevented.
+void _selectionMovedTests(void Function(String description, WidgetTesterCallback test) testWidgetsOnPlatform) {
+  group("when the selection moves >", () {
+    testWidgetsOnPlatform("closes the popover when the caret leaves the word", (tester) async {
+      final popover = await _pumpWithPopoverUp(tester, secondMisspelledParagraph: true);
+
+      await _changeSelection(tester, popover.editor, _caretAt(_offsetOffTheWord));
+
+      // The caret stays where it was moved: Android's dismiss callback, which would put it back at
+      // the tap position, is not run.
+      expect(SuperEditorInspector.findDocumentSelection(), _caretAt(_offsetOffTheWord));
+      _expectPopoverClosedWithCleanup(tester, popover);
+
+      // And moving back into the word doesn't bring it back - only a tap shows a popover.
+      await _changeSelection(tester, popover.editor, _caretAt(_misspelledWordMiddle));
+      expect(_findSuggestionToolbar(), findsNothing);
+
+      popover.finish();
+    });
+
+    testWidgetsOnPlatform("closes the popover when arrow keys move the caret off the word", (tester) async {
+      // The route NOTE-187 measured: hardware arrow keys reach the editor past Android's barrier.
+      final popover = await _pumpWithPopoverUp(tester, secondMisspelledParagraph: true);
+
+      for (int i = 0; i < 4; i += 1) {
+        await tester.pressRightArrow();
+      }
+      await _settleSuggestionPopover(tester);
+
+      final selection = SuperEditorInspector.findDocumentSelection()!;
+      expect(selection.isCollapsed, isTrue);
+      expect((selection.extent.nodePosition as TextNodePosition).offset, greaterThan(_misspelledWordEnd));
+      _expectPopoverClosedWithCleanup(tester, popover);
+
+      popover.finish();
+    });
+
+    testWidgetsOnPlatform("keeps the popover up while the selection stays inside the word", (tester) async {
+      final popover = await _pumpWithPopoverUp(tester);
+
+      // A caret inside the word.
+      await _changeSelection(tester, popover.editor, _caretAt(_misspelledWordStart + 1));
+      _expectPopoverStillUp(popover);
+
+      // A caret just after the word's last character.
+      await _changeSelection(tester, popover.editor, _caretAt(_misspelledWordEnd));
+      _expectPopoverStillUp(popover);
+
+      // Part of the word, selected.
+      await _changeSelection(
+        tester,
+        popover.editor,
+        const DocumentSelection(
+          base: DocumentPosition(nodeId: "1", nodePosition: TextNodePosition(offset: _misspelledWordStart + 1)),
+          extent: DocumentPosition(nodeId: "1", nodePosition: TextNodePosition(offset: _misspelledWordEnd - 1)),
+        ),
+      );
+      _expectPopoverStillUp(popover);
+
+      // One past the word is out.
+      await _changeSelection(tester, popover.editor, _caretAt(_misspelledWordEnd + 1));
+      expect(_findSuggestionToolbar(), findsNothing);
+
+      popover.finish();
     });
   });
 }
+
+/// A tap on a second mis-spelled word while the first one's popover is up moves the popover there
+/// (MemNote NOTE-198) - registered on iOS and desktop, where nothing stops that tap reaching the
+/// document. On Android there is no pointer route to it: the barrier eats a tap while the popover is
+/// up, and a second tap inside the 300ms before it appears is either merged into a double-tap
+/// (close by) or dropped by `TapSequenceGestureRecognizer` (further than `kDoubleTapSlop`).
+///
+/// The tap moves the selection off the first word while its popover is up, which is what closes a
+/// popover. On iOS that close would run the dismissal - allowing handles - in the middle of the tap
+/// handler, after its preventSelectionHandles() and before its showSuggestions(). The handler hides
+/// the old popover before it moves the selection, so there is nothing left to close.
+void _tapAnotherMisspelledWordTest(void Function(String description, WidgetTesterCallback test) testWidgetsOnPlatform) {
+  testWidgetsOnPlatform("moves the popover to another mis-spelled word that is tapped", (tester) async {
+    final popover = await _pumpWithPopoverUp(
+      tester,
+      // Clear of the toolbar, which hangs over the lines just below the first word.
+      fillerParagraphCount: 4,
+      secondMisspelledParagraph: true,
+    );
+
+    await _tapMisspelledWord(tester, nodeId: _secondParagraphId);
+
+    final selection = SuperEditorInspector.findDocumentSelection()!;
+    expect(selection.base.nodeId, _secondParagraphId);
+    expect(selection.extent.nodeId, _secondParagraphId);
+    _expectPopoverStillUp(popover);
+    if (_isMobile) {
+      expect(SuperEditorInspector.findMobileExpandedDragHandles(), findsNothing);
+    }
+
+    popover.finish();
+  });
+}
+
+/// Whether [runner] registers mobile tests - used to register a mobile-only test from a helper
+/// that is shared with desktop.
+bool _isMobileRunner(Object runner) => runner == testWidgetsOnAndroid || runner == testWidgetsOnIos;
 
 /// The selection going away while the popover is up (MemNote NOTE-187), registered once per
 /// mobile platform with that platform's runner.
@@ -486,6 +706,7 @@ Future<Editor> _pumpSpellcheckEditor(
   SuperEditorAndroidControlsController? androidControlsController,
   SuperEditorIosControlsController? iosControlsController,
   int fillerParagraphCount = 0,
+  bool secondMisspelledParagraph = false,
   SpellingAndGrammarPlugin? plugin,
   FocusNode? focusNode,
   SoftwareKeyboardController? softwareKeyboardController,
@@ -496,6 +717,8 @@ Future<Editor> _pumpSpellcheckEditor(
         ParagraphNode(id: "1", text: AttributedText(_paragraphText)),
         for (int i = 0; i < fillerParagraphCount; i += 1)
           ParagraphNode(id: "filler-$i", text: AttributedText("Filler paragraph number $i, with some text in it.")),
+        if (secondMisspelledParagraph)
+          ParagraphNode(id: _secondParagraphId, text: AttributedText(_secondParagraphText)),
       ],
     ),
     composer: MutableDocumentComposer(),
@@ -518,7 +741,10 @@ Future<Editor> _pumpSpellcheckEditor(
       home: Scaffold(
         body: androidControlsController != null
             ? SuperEditorAndroidControlsScope(controller: androidControlsController, child: superEditor)
-            : SuperEditorIosControlsScope(controller: iosControlsController!, child: superEditor),
+            : iosControlsController != null
+                ? SuperEditorIosControlsScope(controller: iosControlsController, child: superEditor)
+                // Desktop: the plugin takes no controls controller there.
+                : superEditor,
       ),
     ),
   );
@@ -533,6 +759,10 @@ Future<Editor> _pumpSpellcheckEditor(
 
 /// Creates the [SpellingAndGrammarPlugin] these tests attach, checking spelling with
 /// [_FakeSpellChecker].
+///
+/// The grammar checker is a fake too, for the desktop tests: on macOS the plugin otherwise
+/// defaults to `MacGrammarCheckService`, a platform channel with nothing behind it in a widget
+/// test.
 SpellingAndGrammarPlugin _createSpellcheckPlugin({
   SuperEditorAndroidControlsController? androidControlsController,
   SuperEditorIosControlsController? iosControlsController,
@@ -541,8 +771,11 @@ SpellingAndGrammarPlugin _createSpellcheckPlugin({
     androidControlsController: androidControlsController,
     iosControlsController: iosControlsController,
     spellCheckService: _FakeSpellChecker(),
+    grammarCheckService: _NoGrammarErrors(),
   );
 }
+
+bool get _isMobile => defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS;
 
 /// The [SpellCheckerPopoverController] the [plugin]'s mobile tap handler shows and hides the
 /// popover through.
@@ -569,9 +802,9 @@ class _PopoverUp {
     required this.plugin,
     required this.focusNode,
     required this.softwareKeyboardController,
-    required this.handlesAllowed,
+    required ValueListenable<bool>? handlesAllowed,
     this.androidControlsController,
-  });
+  }) : _handlesAllowed = handlesAllowed;
 
   final Editor editor;
   final SpellingAndGrammarPlugin plugin;
@@ -579,11 +812,14 @@ class _PopoverUp {
   final SoftwareKeyboardController softwareKeyboardController;
 
   /// The `areSelectionHandlesAllowed` notifier of the controls controller the plugin was
-  /// handed, whichever platform that is.
-  final ValueListenable<bool> handlesAllowed;
+  /// handed, whichever mobile platform that is. Desktop has no controls controller.
+  ValueListenable<bool> get handlesAllowed => _handlesAllowed!;
+  final ValueListenable<bool>? _handlesAllowed;
 
   final SuperEditorAndroidControlsController? androidControlsController;
 
+  /// The popover controller of the plugin's mobile tap handler. The desktop handler is private,
+  /// so on desktop there is nothing to read.
   SpellCheckerPopoverController get popoverController => _popoverControllerOf(plugin);
 
   /// Ends the test without a pending `Timer`: on Android, placing a caret starts the collapsed
@@ -593,20 +829,27 @@ class _PopoverUp {
 
 /// Pumps a spellcheck editor for the platform under test, places a caret on a correctly-spelled
 /// word, taps the mis-spelled one, and checks the popover is up with handles prevented - the
-/// starting point of every "selection goes away" test.
-Future<_PopoverUp> _pumpWithPopoverUp(WidgetTester tester) async {
+/// starting point of every "selection goes away", "suggestion is chosen" and "selection moves"
+/// test.
+///
+/// On desktop there are no handles and the tap handler is private, so only the toolbar is checked.
+Future<_PopoverUp> _pumpWithPopoverUp(
+  WidgetTester tester, {
+  int fillerParagraphCount = 0,
+  bool secondMisspelledParagraph = false,
+}) async {
   final focusNode = FocusNode();
   addTearDown(focusNode.dispose);
   final softwareKeyboardController = SoftwareKeyboardController();
 
   SuperEditorAndroidControlsController? androidControlsController;
   SuperEditorIosControlsController? iosControlsController;
-  late final ValueListenable<bool> handlesAllowed;
+  ValueListenable<bool>? handlesAllowed;
   if (defaultTargetPlatform == TargetPlatform.android) {
     androidControlsController = SuperEditorAndroidControlsController();
     addTearDown(androidControlsController.dispose);
     handlesAllowed = androidControlsController.areSelectionHandlesAllowed;
-  } else {
+  } else if (defaultTargetPlatform == TargetPlatform.iOS) {
     iosControlsController = SuperEditorIosControlsController();
     addTearDown(iosControlsController.dispose);
     handlesAllowed = iosControlsController.areSelectionHandlesAllowed;
@@ -623,14 +866,18 @@ Future<_PopoverUp> _pumpWithPopoverUp(WidgetTester tester) async {
     plugin: plugin,
     focusNode: focusNode,
     softwareKeyboardController: softwareKeyboardController,
+    fillerParagraphCount: fillerParagraphCount,
+    secondMisspelledParagraph: secondMisspelledParagraph,
   );
 
   await _placeCaretOnACorrectlySpelledWord(tester);
   await _tapMisspelledWord(tester);
 
   expect(_findSuggestionToolbar(), findsOneWidget);
-  expect(handlesAllowed.value, isFalse);
-  expect(_popoverControllerOf(plugin).isShowing, isTrue);
+  if (_isMobile) {
+    expect(handlesAllowed!.value, isFalse);
+    expect(_popoverControllerOf(plugin).isShowing, isTrue);
+  }
 
   return _PopoverUp(
     editor: editor,
@@ -649,9 +896,10 @@ Future<void> _placeCaretOnACorrectlySpelledWord(WidgetTester tester) async {
   await _settleSuggestionPopover(tester);
 }
 
-/// Taps the middle of the mis-spelled word, and pumps until the suggestions popover is up.
-Future<void> _tapMisspelledWord(WidgetTester tester) async {
-  await tester.tapInParagraph("1", _misspelledWordMiddle);
+/// Taps the middle of the mis-spelled word - in the first paragraph, unless [nodeId] says
+/// otherwise - and pumps until the suggestions popover is up.
+Future<void> _tapMisspelledWord(WidgetTester tester, {String nodeId = "1"}) async {
+  await tester.tapInParagraph(nodeId, _misspelledWordMiddle);
 
   // Android holds the popover behind a 300ms timer, so the caret is briefly visible at the
   // tap position before the selection expands to the whole word. iOS shows the popover at
@@ -694,6 +942,71 @@ Future<void> _settleSuggestionPopover(WidgetTester tester) async {
 
 String _paragraphTextOf(Editor editor) => (editor.document.first as ParagraphNode).text.toPlainText();
 
+/// A collapsed selection at [offset] in the first paragraph.
+DocumentSelection _caretAt(int offset, {String nodeId = "1"}) => DocumentSelection.collapsed(
+      position: DocumentPosition(nodeId: nodeId, nodePosition: TextNodePosition(offset: offset)),
+    );
+
+/// Moves the selection the way an app, or a keyboard shortcut, does - without a tap, so nothing
+/// consults the spellcheck tap handler.
+Future<void> _changeSelection(WidgetTester tester, Editor editor, DocumentSelection selection) async {
+  editor.execute([
+    ChangeSelectionRequest(selection, SelectionChangeType.placeCaret, SelectionReason.userInteraction),
+  ]);
+  await _settleSuggestionPopover(tester);
+}
+
+/// The selection colour of the second paragraph's text component (see [_secondParagraphText]).
+///
+/// The styler only applies its override to a node that has spelling errors, and the first
+/// paragraph has none once its word is corrected - so a colour check made there would pass whether
+/// or not the override was still on.
+Color _secondParagraphSelectionColor(WidgetTester tester) => tester
+    .widgetList<TextComponent>(find.byType(TextComponent))
+    .singleWhere((component) => component.text.toPlainText() == _secondParagraphText)
+    .selectionColor;
+
+/// Asserts the popover is gone *and* that the tap handler's dismissal ran: the toolbar is off
+/// screen, handles are allowed, the popover controller no longer says it is showing, and on Android
+/// the popover's selection colour is off. That last check reads the second paragraph, so
+/// [popover] must have been pumped with `secondMisspelledParagraph: true`.
+///
+/// Desktop's dismissal is `popoverController.hide()` alone and its tap handler is private, so
+/// there the toolbar is all there is to check.
+void _expectPopoverClosedWithCleanup(WidgetTester tester, _PopoverUp popover) {
+  expect(_findSuggestionToolbar(), findsNothing);
+  if (!_isMobile) {
+    return;
+  }
+
+  expect(popover.handlesAllowed.value, isTrue);
+  expect(popover.popoverController.isShowing, isFalse);
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    expect(_secondParagraphSelectionColor(tester), isNot(_androidPopoverSelectionColor));
+  }
+}
+
+/// Asserts the popover is still up, with the tap handler's popover state intact.
+void _expectPopoverStillUp(_PopoverUp popover) {
+  expect(_findSuggestionToolbar(), findsOneWidget);
+  if (!_isMobile) {
+    return;
+  }
+
+  expect(popover.handlesAllowed.value, isFalse);
+  expect(popover.popoverController.isShowing, isTrue);
+}
+
+/// Taps [suggestion] in the toolbar of the platform under test.
+Future<void> _chooseSuggestion(WidgetTester tester, String suggestion) async {
+  await tester.tap(
+    _isMobile //
+        ? find.widgetWithText(TextButton, suggestion)
+        : find.descendant(of: find.byType(DesktopSpellingSuggestionToolbar), matching: find.text(suggestion)),
+  );
+  await _settleSuggestionPopover(tester);
+}
+
 /// A [SpellCheckService] that reports "Hllo" as mis-spelled, with [_suggestions] as its
 /// replacements, so the word is underlined and a tap on it has something to show.
 class _FakeSpellChecker extends SpellCheckService {
@@ -711,4 +1024,10 @@ class _FakeSpellChecker extends SpellCheckService {
       ),
     ];
   }
+}
+
+/// A [GrammarCheckService] that finds nothing wrong - see [_createSpellcheckPlugin].
+class _NoGrammarErrors implements GrammarCheckService {
+  @override
+  Future<List<GrammarError>?> checkGrammar(Locale locale, String text) async => const [];
 }

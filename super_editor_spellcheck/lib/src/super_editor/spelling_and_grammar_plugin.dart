@@ -88,10 +88,13 @@ class SpellingAndGrammarPlugin extends SuperEditorPlugin {
         _selectedWordLink,
         popoverController: _popoverController,
         toolbarBuilder: toolbarBuilder,
-        // Losing the selection closes the popover without going through the tap handler, so
-        // run the handler's own dismissal: it's what allows the selection handles it prevented
-        // (MemNote NOTE-187). Read lazily - the tap handler is created further down.
-        onSelectionLost: () => _contentTapHandler?.hidePopover(),
+        // The overlay closes the popover itself when the selection goes away or leaves the word,
+        // and when the document changes - which is how choosing a suggestion closes it. None of
+        // those go through the tap handler, so run the handler's own dismissal: it's what allows
+        // the selection handles it prevented, restores the default selection colour and resets
+        // `isShowing` (MemNote NOTE-187, NOTE-198). Read lazily - the tap handler is created
+        // further down.
+        onClosedByOverlay: () => _contentTapHandler?.hidePopover(),
       ),
     ];
 
@@ -832,6 +835,14 @@ class SuperEditorIosSpellCheckerTapHandler extends _SpellCheckerContentTapDelega
       return TapHandlingInstruction.continueHandling;
     }
 
+    // iOS hangs no barrier over the document, so this tap can land on a second mis-spelled word
+    // while the first one's popover is up. Close that popover before moving the selection:
+    // otherwise the overlay sees the selection leave its word and closes it itself, running
+    // hidePopover() - which allows handles - after the veto below and before showSuggestions()
+    // (MemNote NOTE-198). Only the popover is hidden here; the lines below set handles and the
+    // selection colour for the new one anyway.
+    popoverController.hide();
+
     controlsController
       ..hideToolbar()
       ..hideMagnifier()
@@ -966,7 +977,9 @@ class SuperEditorAndroidSpellCheckerTapHandler extends _SpellCheckerContentTapDe
     // Losing the selection used to be the ordinary way in, until the overlay learned
     // to run this handler's `hidePopover()` when that happens (MemNote NOTE-187). What
     // is left is code outside this handler: an app calling `hide()` on this handler's
-    // public `popoverController`, or a custom toolbar calling its `onCancelPressed`.
+    // public `popoverController`, or a custom toolbar calling its `onCancelPressed` (which
+    // stays stuck only while the selection stays in the word: since MemNote NOTE-198 the
+    // overlay also runs `hidePopover()` when the selection leaves it).
     // This call is what un-sticks the next tap on a mis-spelled word.
     controlsController.allowSelectionHandles();
 
@@ -1116,9 +1129,11 @@ class _SpellCheckerContentTapDelegate extends ContentTapDelegate {
   /// Runs this handler's own popover dismissal - the same cleanup a tap away from the popover
   /// runs - for a popover that went away without passing through this handler.
   ///
-  /// [SpellingErrorSuggestionOverlay] calls it (via [SpellingErrorSuggestionOverlay.onSelectionLost])
-  /// when the document selection goes away while the popover is up. On Android and iOS that
-  /// dismissal is what allows the selection handles this handler prevented (MemNote NOTE-187).
+  /// [SpellingErrorSuggestionOverlay] calls it (via [SpellingErrorSuggestionOverlay.onClosedByOverlay])
+  /// when it closes the popover itself: the document selection went away (MemNote NOTE-187) or
+  /// left the mis-spelled word, or the document changed, which is how choosing a suggestion closes
+  /// it (MemNote NOTE-198). On Android and iOS that dismissal is what allows the selection handles
+  /// this handler prevented and restores the default selection colour.
   void hidePopover() {}
 }
 
