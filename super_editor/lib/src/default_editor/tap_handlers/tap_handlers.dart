@@ -2,6 +2,7 @@ import 'package:attributed_text/attributed_text.dart';
 import 'package:flutter/rendering.dart';
 import 'package:super_editor/src/core/document.dart';
 import 'package:super_editor/src/core/document_composer.dart';
+import 'package:super_editor/src/core/document_layout.dart';
 import 'package:super_editor/src/core/document_selection.dart';
 import 'package:super_editor/src/core/edit_context.dart';
 import 'package:super_editor/src/core/editor.dart';
@@ -9,7 +10,7 @@ import 'package:super_editor/src/default_editor/attributions.dart';
 import 'package:super_editor/src/default_editor/multi_node_editing.dart';
 import 'package:super_editor/src/default_editor/paragraph.dart';
 import 'package:super_editor/src/default_editor/text.dart';
-import 'package:super_editor/src/infrastructure/_logging.dart';
+import 'package:super_editor/src/default_editor/text_tools.dart';
 import 'package:super_editor/src/infrastructure/document_gestures_interaction_overrides.dart';
 import 'package:super_editor/src/infrastructure/links.dart';
 
@@ -23,6 +24,9 @@ SuperEditorLaunchLinkTapHandler superEditorLaunchLinkTapHandlerFactory(SuperEdit
 ///
 /// This delegate only opens links when [composer.isInInteractionMode] is
 /// `true`.
+///
+/// Only the link's own glyphs are clickable, not the blank space after a link
+/// that ends a line — see [getCharacterSelectionUnderOffset].
 class SuperEditorLaunchLinkTapHandler extends ContentTapDelegate {
   SuperEditorLaunchLinkTapHandler(this.document, this.composer) {
     composer.isInInteractionMode.addListener(notifyListeners);
@@ -38,30 +42,25 @@ class SuperEditorLaunchLinkTapHandler extends ContentTapDelegate {
   final DocumentComposer composer;
 
   @override
-  MouseCursor? mouseCursorForContentHover(DocumentPosition hoverPosition) {
+  MouseCursor? mouseCursorForHover(DocumentHoverDetails details) {
     if (!composer.isInInteractionMode.value) {
       // The editor isn't in "interaction mode". We don't want a special cursor
       return null;
     }
 
-    final link = _getLinkAtPosition(hoverPosition);
+    final link = _getLinkAtOffset(details.documentLayout, details.layoutOffset);
     return link != null ? SystemMouseCursors.click : null;
   }
 
   @override
   TapHandlingInstruction onTap(DocumentTapDetails details) {
-    final tapPosition = details.documentLayout.getDocumentPositionNearestToOffset(details.layoutOffset);
-    if (tapPosition == null) {
-      return TapHandlingInstruction.continueHandling;
-    }
-
     if (!composer.isInInteractionMode.value) {
       // The editor isn't in "interaction mode". We don't want to allow
       // users to open links by tapping on them.
       return TapHandlingInstruction.continueHandling;
     }
 
-    final link = _getLinkAtPosition(tapPosition);
+    final link = _getLinkAtOffset(details.documentLayout, details.layoutOffset);
     if (link != null) {
       // The user tapped on a link. Launch it.
       UrlLauncher.instance.launchUrl(link);
@@ -72,20 +71,22 @@ class SuperEditorLaunchLinkTapHandler extends ContentTapDelegate {
     }
   }
 
-  Uri? _getLinkAtPosition(DocumentPosition position) {
-    final nodePosition = position.nodePosition;
-    if (nodePosition is! TextNodePosition) {
+  /// Returns the URL of the link whose glyphs lie under [layoutOffset], or
+  /// `null` if the point isn't over a link's text.
+  Uri? _getLinkAtOffset(DocumentLayout documentLayout, Offset layoutOffset) {
+    final character = getCharacterSelectionUnderOffset(
+      document: document,
+      docLayout: documentLayout,
+      layoutOffset: layoutOffset,
+    );
+    if (character == null) {
       return null;
     }
 
-    final textNode = document.getNodeById(position.nodeId);
-    if (textNode is! TextNode) {
-      editorGesturesLog
-          .shout("Received a report of a tap on a TextNodePosition, but the node with that ID is a: $textNode");
-      return null;
-    }
-
-    final tappedAttributions = textNode.text.getAllAttributionsAt(nodePosition.offset);
+    // getCharacterSelectionUnderOffset only ever selects within a TextNode.
+    final textNode = document.getNodeById(character.base.nodeId) as TextNode;
+    final characterOffset = (character.base.nodePosition as TextNodePosition).offset;
+    final tappedAttributions = textNode.text.getAllAttributionsAt(characterOffset);
     for (final tappedAttribution in tappedAttributions) {
       if (tappedAttribution is LinkAttribution) {
         return tappedAttribution.launchableUri;

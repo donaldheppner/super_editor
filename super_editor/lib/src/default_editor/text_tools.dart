@@ -7,6 +7,7 @@ import 'package:super_editor/src/core/document_selection.dart';
 import 'package:super_editor/src/default_editor/text.dart';
 import 'package:super_editor/src/infrastructure/_logging.dart';
 import 'package:super_editor/src/infrastructure/composable_text.dart';
+import 'package:super_editor/src/infrastructure/strings.dart';
 
 /// Collection of generic text inspection behavior that does not belong
 /// to any particular `DocumentNode` or `Component`.
@@ -137,6 +138,93 @@ TextSelection expandPositionToParagraph({
     baseOffset: start,
     extentOffset: end,
   );
+}
+
+/// Returns a selection around the single character whose rendered glyph lies
+/// under [layoutOffset], a point in [docLayout]'s coordinate space, or `null`
+/// if the point isn't over a character of text.
+///
+/// Use this to hit-test inline content, such as a link, where
+/// [DocumentLayout.getDocumentPositionNearestToOffset] alone is too generous:
+/// it snaps a point anywhere in the blank space after a line onto the caret
+/// position at that line's end, so text that ends a line would claim the rest
+/// of the line out to the document's edge — and likewise the padding before a
+/// line's first character, and the gap after the first visual line of a
+/// wrapped span.
+///
+/// So the nearest caret position only nominates candidates: the characters
+/// (grapheme clusters, so an emoji counts as one) on either side of it. A
+/// candidate is hit only if the point lies inside that character's own box —
+/// its glyph width, stretched to the full height of its line so that the
+/// leading above and below the glyphs still counts.
+///
+/// The returned selection's base is the character's upstream edge and its
+/// extent is the character's downstream edge, both in the same [TextNode].
+/// The base's offset is the one to query attributions at, e.g., with
+/// [AttributedText.getAllAttributionsAt].
+DocumentSelection? getCharacterSelectionUnderOffset({
+  required Document document,
+  required DocumentLayout docLayout,
+  required Offset layoutOffset,
+}) {
+  final position = docLayout.getDocumentPositionNearestToOffset(layoutOffset);
+  if (position == null) {
+    return null;
+  }
+  final nodePosition = position.nodePosition;
+  if (nodePosition is! TextNodePosition) {
+    return null;
+  }
+  final node = document.getNodeById(position.nodeId);
+  if (node is! TextNode) {
+    return null;
+  }
+
+  final plainText = node.text.toPlainText();
+  final caret = nodePosition.offset;
+  final candidates = [
+    (plainText.moveOffsetUpstreamByCharacter(caret), caret),
+    (caret, plainText.moveOffsetDownstreamByCharacter(caret)),
+  ];
+  for (final (start, end) in candidates) {
+    if (start == null || end == null) {
+      continue;
+    }
+
+    final hitRect = _characterHitRect(docLayout, node.id, start, end);
+    if (hitRect != null && hitRect.contains(layoutOffset)) {
+      return DocumentSelection(
+        base: DocumentPosition(nodeId: node.id, nodePosition: TextNodePosition(offset: start)),
+        extent: DocumentPosition(nodeId: node.id, nodePosition: TextNodePosition(offset: end)),
+      );
+    }
+  }
+  return null;
+}
+
+/// The box a pointer must fall in to be "on" the character spanning [start] to
+/// [end] in the text node with [nodeId]: the glyph's horizontal extent, and the
+/// full height of its line.
+///
+/// The glyph box alone is too short whenever the line height is above 1, and
+/// the caret rect alone has no width. The caret at [start], with downstream
+/// affinity, sits on the character's own line, even for the first character
+/// after a soft wrap.
+Rect? _characterHitRect(DocumentLayout docLayout, String nodeId, int start, int end) {
+  DocumentPosition at(int textOffset) => DocumentPosition(
+        nodeId: nodeId,
+        nodePosition: TextNodePosition(offset: textOffset),
+      );
+
+  final glyph = docLayout.getRectForSelection(at(start), at(end));
+  if (glyph == null || glyph.width <= 0) {
+    return null;
+  }
+  final line = docLayout.getRectForPosition(at(start));
+  if (line == null) {
+    return glyph;
+  }
+  return Rect.fromLTRB(glyph.left, min(glyph.top, line.top), glyph.right, max(glyph.bottom, line.bottom));
 }
 
 // copied from: flutter/lib/src/widgets/editable_text.dart

@@ -2106,6 +2106,89 @@ in the fork, and MemNote's `flutter/lib` calls neither method itself, so no reac
 repo drags a hidden handle. Worth knowing before a second caller is added — not a defect, and
 nothing to fix here.
 
+### Hover cursor: tell `ContentTapDelegate` where the pointer is, and hit-test links glyph-exactly (MemNote NOTE-197)
+
+`super_editor/lib/src/infrastructure/document_gestures_interaction_overrides.dart`,
+`super_editor/lib/src/default_editor/document_gestures_mouse.dart`,
+`super_editor/lib/src/super_reader/read_only_document_mouse_interactor.dart`,
+`super_editor/lib/src/chat/super_message_mouse_interactor.dart`,
+`super_editor/lib/src/default_editor/text_tools.dart`,
+`super_editor/lib/src/default_editor/tap_handlers/tap_handlers.dart`,
+`super_editor/lib/src/super_reader/super_reader.dart`
+
+`ContentTapDelegate.mouseCursorForContentHover(DocumentPosition)` was only ever handed the position
+`getDocumentPositionNearestToOffset` *snapped* the pointer to, never the pointer itself. That snap
+puts a pointer anywhere in the blank space after a line onto the caret at the line's end, so a link
+that ends a line claimed the rest of the line — the click cursor showed, and a tap launched the
+link, out to the document's edge. The same snap made the padding before a line-starting link and
+the gap after the first visual line of a wrapped link clickable. Taps had the offset
+(`DocumentTapDetails.layoutOffset`) but the built-in `SuperEditorLaunchLinkTapHandler` and
+`SuperReaderLaunchLinkTapHandler` snapped it too, so both halves had the flaw.
+
+MemNote fixed this for its own handler in NOTE-189, but the hover half needed a workaround for the
+missing parameter: a global pointer route recording hover offsets, plus a `notifyListeners()` on
+every hover event to make the interactor re-query the cursor (relying on global routes running
+after the interactor's own listener, and computing the cursor twice per event). This patch supplies
+the parameter, so MemNote's handler is now a plain override.
+
+- **API: a new method with a delegating default, not an optional parameter.**
+  `ContentTapDelegate` gains `MouseCursor? mouseCursorForHover(DocumentHoverDetails details)`, whose
+  default implementation returns `mouseCursorForContentHover(details.documentPosition)`. The three
+  mouse interactors (editor, reader, and `SuperMessage`'s) now call `mouseCursorForHover` only.
+  An optional parameter on the existing method looks less breaking but is the opposite for a class
+  meant to be extended: Dart requires an override to accept every parameter of the member it
+  overrides, so adding `{Offset? layoutOffset}` to the base would make every existing
+  `mouseCursorForContentHover` override in every app a compile error ("isn't a valid override").
+  The delegating default keeps every existing override compiling *and* being called, with the same
+  argument as before; a delegate that wants the offset overrides the new method instead. Implementers
+  (`implements ContentTapDelegate`) would break on any new member, but there are none in the fork or
+  in MemNote, and the class's own `with ChangeNotifier` plus its docs make it an extension point.
+  `mouseCursorForContentHover` is not deprecated: the snapped position is the right input for
+  block-level delegates, and the deprecation is upstream's call. Upstream's own
+  `SuperTextFieldTapHandler.mouseCursorForContentHover` already takes a details object, so this
+  brings the document delegate in line rather than inventing a shape.
+- `DocumentHoverDetails` mirrors `DocumentTapDetails` (`documentLayout`, `layoutOffset`,
+  `globalOffset`) and adds `documentPosition`, the snapped position the interactor already computed,
+  so the default needs nothing recomputed. The interactors still skip delegates entirely when there
+  is no nearest position, exactly as before.
+- **Glyph-exact hit test: `getCharacterSelectionUnderOffset({document, docLayout, layoutOffset})`**
+  in `text_tools.dart`, moved here from MemNote's `linkAtLayoutOffset` so the built-in handlers and
+  MemNote share one copy (MemNote now calls this one and keeps only the link-span mapping on top).
+  The nearest caret position nominates the grapheme clusters on either side of it; a candidate is hit
+  only if the point lies in that character's box — glyph width from `getRectForSelection`, stretched
+  to the full line height from `getRectForPosition` so the leading above and below the glyphs still
+  counts. It returns a `DocumentSelection` around the hit character, like `getWordSelection` beside
+  it. MemNote's version skipped non-link candidates before measuring; this one measures both and
+  takes the first containing rect. The two agree whenever adjacent glyph boxes do not overlap, which
+  `Rect.contains` (left/top inclusive, right/bottom exclusive) guarantees for adjacent LTR glyphs.
+- **Both built-in launch-link handlers** now use it for hover (`mouseCursorForHover`) and for taps
+  (`onTap`). They no longer override `mouseCursorForContentHover`, so a caller that invokes *that*
+  method on a built-in handler directly now gets the base `null`; nothing in the fork or MemNote does,
+  and the interactors never did after this patch. The unreachable "node is not a TextNode" shout went
+  with the old lookup, since the helper only ever selects inside a `TextNode`.
+- `SuperMessage` was beyond the ticket, deliberately: its mouse interactor is the third copy of
+  `_updateMouseCursor`, and its default factory builds a `SuperReaderLaunchLinkTapHandler`, which now
+  overrides only the new method — leaving that interactor on the old call would have silently lost
+  the click cursor over chat links.
+- MemNote does not use the built-in handlers (it passes its own factories), so this is cleanup on the
+  fork's side and the user-visible effect in MemNote is nil; MemNote's own `LinkTapHandler` drops the
+  global route and its `getDocumentLayout` parameter in the same ticket.
+- **Genuine upstream candidate**: the whole-line flaw is upstream's, the API change is additive, and
+  existing delegates behave identically. Not yet submitted upstream — Don's call. Scrub the MemNote
+  references (NOTE-189/NOTE-197 and the `linkAtLayoutOffset` provenance line) before doing so.
+
+Tests: `super_editor/test/super_editor/launch_link_tap_handlers_test.dart`, 22 tests — the editor
+handler (tap on the link, on its last character's right half, in the leading above it; no launch
+from the blank space after it, the padding before it, or after a wrapped link's first line; a
+surrogate-pair link; inactive interaction mode), its hover cursor (click over the link, text after
+it, following the pointer off and back on, text outside interaction mode), the reader and
+`SuperMessage` handlers (tap and hover), backward compatibility (a delegate overriding only
+`mouseCursorForContentHover` is still asked, with the snapped position; `mouseCursorForHover`
+receives the pointer offset, the global offset, the snapped position and the layout), and the helper
+itself. Sensitivity: making the helper accept every candidate regardless of its rect — the old
+snapping behaviour — fails 11 of the 22, every one that pins glyph-exactness. The package suite ran
+locally on Windows: **5,742 passed, 7 skipped, 0 failed.**
+
 ## App-specific (not for upstream)
 
 Thin patches carried on top of upstream `0.3.0-dev.52` — see `git log upstream/main..main`:

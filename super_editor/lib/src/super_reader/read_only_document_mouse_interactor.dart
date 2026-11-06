@@ -213,7 +213,14 @@ class _ReadOnlyDocumentMouseInteractorState extends State<ReadOnlyDocumentMouseI
       return;
     }
 
-    final cursorForContent = widget.contentTapHandler?.mouseCursorForContentHover(docPosition);
+    final cursorForContent = widget.contentTapHandler?.mouseCursorForHover(
+      DocumentHoverDetails(
+        documentLayout: _docLayout,
+        layoutOffset: docOffset,
+        globalOffset: globalPosition,
+        documentPosition: docPosition,
+      ),
+    );
     _mouseCursor.value = cursorForContent ?? SystemMouseCursors.text;
   }
 

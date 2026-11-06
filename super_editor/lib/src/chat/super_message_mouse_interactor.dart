@@ -158,8 +158,14 @@ class _SuperMessageMouseInteractorState extends State<SuperMessageMouseInteracto
       return;
     }
 
+    final hoverDetails = DocumentHoverDetails(
+      documentLayout: _docLayout,
+      layoutOffset: docOffset,
+      globalOffset: globalPosition,
+      documentPosition: docPosition,
+    );
     for (final handler in widget.contentTapHandlers) {
-      final cursorForContent = handler.mouseCursorForContentHover(docPosition);
+      final cursorForContent = handler.mouseCursorForHover(hoverDetails);
       if (cursorForContent != null) {
         _mouseCursor.value = cursorForContent;
         return;

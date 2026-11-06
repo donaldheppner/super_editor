@@ -23,8 +23,8 @@ import 'package:super_editor/src/default_editor/list_items.dart';
 import 'package:super_editor/src/default_editor/paragraph.dart';
 import 'package:super_editor/src/default_editor/text.dart';
 import 'package:super_editor/src/default_editor/text/custom_underlines.dart';
+import 'package:super_editor/src/default_editor/text_tools.dart';
 import 'package:super_editor/src/default_editor/unknown_component.dart';
-import 'package:super_editor/src/infrastructure/_logging.dart';
 import 'package:super_editor/src/infrastructure/content_layers.dart';
 import 'package:super_editor/src/infrastructure/content_layers_for_slivers.dart';
 import 'package:super_editor/src/infrastructure/document_gestures_interaction_overrides.dart';
@@ -675,25 +675,23 @@ SuperReaderLaunchLinkTapHandler superReaderLaunchLinkTapHandlerFactory(SuperRead
 
 /// A [ContentTapDelegate] that opens links when the user taps text with
 /// a [LinkAttribution].
+///
+/// Only the link's own glyphs are clickable, not the blank space after a link
+/// that ends a line — see [getCharacterSelectionUnderOffset].
 class SuperReaderLaunchLinkTapHandler extends ContentTapDelegate {
   SuperReaderLaunchLinkTapHandler(this.document);
 
   final Document document;
 
   @override
-  MouseCursor? mouseCursorForContentHover(DocumentPosition hoverPosition) {
-    final link = _getLinkAtPosition(hoverPosition);
+  MouseCursor? mouseCursorForHover(DocumentHoverDetails details) {
+    final link = _getLinkAtOffset(details.documentLayout, details.layoutOffset);
     return link != null ? SystemMouseCursors.click : null;
   }
 
   @override
   TapHandlingInstruction onTap(DocumentTapDetails details) {
-    final tapPosition = details.documentLayout.getDocumentPositionNearestToOffset(details.layoutOffset);
-    if (tapPosition == null) {
-      return TapHandlingInstruction.continueHandling;
-    }
-
-    final link = _getLinkAtPosition(tapPosition);
+    final link = _getLinkAtOffset(details.documentLayout, details.layoutOffset);
     if (link != null) {
       // The user tapped on a link. Launch it.
       UrlLauncher.instance.launchUrl(link);
@@ -704,20 +702,22 @@ class SuperReaderLaunchLinkTapHandler extends ContentTapDelegate {
     }
   }
 
-  Uri? _getLinkAtPosition(DocumentPosition position) {
-    final nodePosition = position.nodePosition;
-    if (nodePosition is! TextNodePosition) {
+  /// Returns the URL of the link whose glyphs lie under [layoutOffset], or
+  /// `null` if the point isn't over a link's text.
+  Uri? _getLinkAtOffset(DocumentLayout documentLayout, Offset layoutOffset) {
+    final character = getCharacterSelectionUnderOffset(
+      document: document,
+      docLayout: documentLayout,
+      layoutOffset: layoutOffset,
+    );
+    if (character == null) {
       return null;
     }
 
-    final textNode = document.getNodeById(position.nodeId);
-    if (textNode is! TextNode) {
-      readerGesturesLog
-          .shout("Received a report of a tap on a TextNodePosition, but the node with that ID is a: $textNode");
-      return null;
-    }
-
-    final tappedAttributions = textNode.text.getAllAttributionsAt(nodePosition.offset);
+    // getCharacterSelectionUnderOffset only ever selects within a TextNode.
+    final textNode = document.getNodeById(character.base.nodeId) as TextNode;
+    final characterOffset = (character.base.nodePosition as TextNodePosition).offset;
+    final tappedAttributions = textNode.text.getAllAttributionsAt(characterOffset);
     for (final tappedAttribution in tappedAttributions) {
       if (tappedAttribution is LinkAttribution) {
         return tappedAttribution.launchableUri;
