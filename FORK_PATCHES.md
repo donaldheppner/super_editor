@@ -48,7 +48,7 @@ Two more things a fresh clone needs:
 
 Upstream's workflows install the `master` channel. This fork pins the SDK
 instead — `FLUTTER_VERSION` at the top of `.github/workflows/pr_validation.yaml`
-and `.github/workflows/build_clones.yaml`, currently `3.47.2`, which is the
+and `.github/workflows/build_clones.yaml`, currently `3.47.9`, which is the
 toolchain MemNote develops and ships against. **Bump both when MemNote's Flutter
 moves.** A red fork run now means the change broke something; before NOTE-165 it
 meant nothing, because every PR was red for a reason no PR had caused.
