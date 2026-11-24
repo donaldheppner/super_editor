@@ -48,7 +48,7 @@ Two more things a fresh clone needs:
 
 Upstream's workflows install the `master` channel. This fork pins the SDK
 instead — `FLUTTER_VERSION` at the top of `.github/workflows/pr_validation.yaml`
-and `.github/workflows/build_clones.yaml`, currently `3.47.9`, which is the
+and `.github/workflows/build_clones.yaml`, currently `3.50.1`, which is the
 toolchain MemNote develops and ships against. **Bump both when MemNote's Flutter
 moves.** A red fork run now means the change broke something; before NOTE-165 it
 meant nothing, because every PR was red for a reason no PR had caused.
@@ -111,6 +111,59 @@ committed. Seven files took it — `super_editor/example`, `super_editor_clipboa
 and its example, `super_editor_spellcheck` and its example, `super_keyboard` and
 its example, and `super_text_layout/example`. With those committed, `pub get`
 across the seven top-level packages leaves `git status` clean again.
+
+**MemNote NOTE-234 moved the pin from 3.47.9 to 3.50.1** (Dart 3.14.0). Three
+things needed handling, each taken as upstream already has it where upstream
+had one:
+
+- **`super_editor_spellcheck` failed `flutter pub get`.** 3.50.1's
+  `flutter_test` pins `test_api` 0.7.14, which needs a `test` that needs
+  `analyzer >=13`, and `pigeon ^26.1.2` caps `analyzer` below 13 — the clash
+  NOTE-165 saw on `master`, now on stable. The pubspec takes upstream's own line,
+  `pigeon: ^29.0.7` (27.3.1 is the first that accepts `analyzer` 13). `pigeon`
+  is a dev dependency that only regenerates `lib/src/platform/messages.g.dart`,
+  which stays as generated (by v21.2.0).
+- **One test failed**: "SuperTextField computes line height for empty field",
+  with "An animation is still running even after the widget tree was disposed".
+  `loadAppFonts()` inside the test makes a `fontsChange` system message arrive
+  asynchronously, and the relayout frame it schedules
+  (`RelayoutWhenSystemFontsChangeMixin`) is still pending when the test ends.
+  Upstream fixed the same failure in `d21c9c0c` by loading the fonts in
+  `setUpAll`; the test file is now byte-identical to upstream's.
+- **The three `analyze_*` jobs pass `--no-fatal-infos`.** 3.50 deprecates
+  `package:flutter/material.dart` (and `cupertino.dart`) for the standalone
+  `package:material_ui`, and every import is a `deprecated_member_use` info:
+  3 in `super_editor_clipboard`, 4 in `super_keyboard`, 13 in
+  `super_text_layout`, nothing else. `flutter analyze` fails on infos by
+  default. Upstream moved to `material_ui` in `d21c9c0c`; this fork does not
+  follow yet, because `material_ui`'s `Theme`, `ThemeData` and localizations are
+  distinct types from the framework's, so the move changes what `super_editor`
+  hands MemNote, which still builds on the framework's. Warnings and errors
+  still fail the jobs, and the infos still print.
+
+`super_editor`'s suite was run locally on Windows against 3.50.1 after these:
+**5,742 passed, 7 skipped, 0 failed** (5,741 / 7 / 1 before the test fix).
+The other packages' `test/` suites pass too: `attributed_text` 125,
+`super_editor_clipboard` 12, `super_editor_spellcheck` 62, `super_keyboard` 6,
+`super_text_layout` 29.
+`pub get` in `attributed_text`, `super_editor`, `super_editor_clipboard`,
+`super_editor_spellcheck`, `super_keyboard` and `super_text_layout` (and their
+examples) leaves `git status` clean; 3.50 wrote no new migration into any of
+them. `website` does not resolve on any SDK (it asks for `follow_the_leader
+^0.0.5`, `super_editor` for `^0.5.3`), which no job runs and this move did not
+touch.
+
+**The fork's CI did not run on this move, or on any PR since 2026-09-17.**
+GitHub creates no Actions check suite for any event in this repository, and
+dispatching a workflow answers HTTP 422 "Actions has been disabled for this
+repository", although `GET /repos/donaldheppner/super_editor/actions/permissions`
+reports `enabled: true`. PRs #29 to #32 (NOTE-187, NOTE-197, NOTE-198 and the
+3.47.9 pin) merged with no checks at all, so the 3.47.9 pin was never run on
+CI either. Until Actions is enabled again for the repository, the local runs
+above are the only evidence for a fork change, and what only CI runs is
+unverified on 3.50.1: the golden jobs (the two families above regenerated on
+both earlier moves), `test_mac` and `test_linux`, and the seven clone builds. Once it runs, a red golden job here is the same
+antialiasing story and takes the same route.
 
 Two consequences of the pin needed handling in the same change, and both are
 maintenance the next Flutter bump inherits:
