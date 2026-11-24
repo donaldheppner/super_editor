@@ -194,7 +194,12 @@ jobs:
       - run: flutter pub get
 
       # Enforce static analysis
-      - run: flutter analyze
+      #
+      # MemNote fork (NOTE-234): infos are not fatal. Flutter 3.50 deprecates
+      # package:flutter/material.dart in favour of package:material_ui, and every import of
+      # it is an info; moving this fork off it changes the types super_editor hands the app
+      # (see FORK_PATCHES.md). Warnings and errors still fail the job, and the infos print.
+      - run: flutter analyze --no-fatal-infos
 
   test_super_editor_clipboard:
     runs-on: ubuntu-latest
@@ -236,7 +241,12 @@ jobs:
       - run: flutter pub get
 
       # Enforce static analysis
-      - run: flutter analyze
+      #
+      # MemNote fork (NOTE-234): infos are not fatal. Flutter 3.50 deprecates
+      # package:flutter/material.dart in favour of package:material_ui, and every import of
+      # it is an info; moving this fork off it changes the types super_editor hands the app
+      # (see FORK_PATCHES.md). Warnings and errors still fail the job, and the infos print.
+      - run: flutter analyze --no-fatal-infos
 
   test_super_keyboard:
     runs-on: ubuntu-latest
@@ -308,7 +318,12 @@ jobs:
       - run: flutter pub get
 
       # Enforce static analysis
-      - run: flutter analyze
+      #
+      # MemNote fork (NOTE-234): infos are not fatal. Flutter 3.50 deprecates
+      # package:flutter/material.dart in favour of package:material_ui, and every import of
+      # it is an info; moving this fork off it changes the types super_editor hands the app
+      # (see FORK_PATCHES.md). Warnings and errors still fail the job, and the infos print.
+      - run: flutter analyze --no-fatal-infos
 
   test_super_text_layout:
     runs-on: ubuntu-latest
