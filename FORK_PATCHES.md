@@ -153,17 +153,29 @@ them. `website` does not resolve on any SDK (it asks for `follow_the_leader
 ^0.0.5`, `super_editor` for `^0.5.3`), which no job runs and this move did not
 touch.
 
-**The fork's CI did not run on this move, or on any PR since 2026-09-17.**
-GitHub creates no Actions check suite for any event in this repository, and
-dispatching a workflow answers HTTP 422 "Actions has been disabled for this
-repository", although `GET /repos/donaldheppner/super_editor/actions/permissions`
-reports `enabled: true`. PRs #29 to #32 (NOTE-187, NOTE-197, NOTE-198 and the
-3.47.9 pin) merged with no checks at all, so the 3.47.9 pin was never run on
-CI either. Until Actions is enabled again for the repository, the local runs
-above are the only evidence for a fork change, and what only CI runs is
-unverified on 3.50.1: the golden jobs (the two families above regenerated on
-both earlier moves), `test_mac` and `test_linux`, and the seven clone builds. Once it runs, a red golden job here is the same
-antialiasing story and takes the same route.
+**The fork's checks run locally, not on GitHub** (Don's decision on MemNote
+NOTE-234, 2026-11-24: no GitHub compute for the fork). GitHub has started no
+workflow in this repository since 2026-09-17: PRs #29 to #32 (NOTE-187,
+NOTE-197, NOTE-198 and the 3.47.9 pin) merged with no checks at all, and
+nothing ran on this move. The workflow files stay as the list of jobs and of
+the pinned SDK, and `fork_ci_local.sh <branch>` at the repository root runs
+them on Linux x64 (WSL Ubuntu on the MemNote Windows machine) from a fresh
+clone of the pushed branch, with the SDK, the clone and the pub cache on
+`/dev/shm`. **A run of it with nothing failed is the bar for a fork change**,
+with `flutter test` in `super_editor/` on Windows for `test_windows`. It cannot
+build for macOS or iOS: `test_mac` is not run, and the clones CI builds on a Mac
+are compiled another way (medium and google_docs for web, the rest with
+`flutter build bundle`), which leaves out their native shells.
+
+On this move, at `13aa2fb3` (the commit before this paragraph and the script):
+every job passed. `test_linux` 5,742 passed / 7 skipped; the golden jobs 216
+passed / 4 skipped (`super_editor`), 6, 1 and 22, **with no image
+regenerated**: the ten that needed regenerating on both earlier moves are
+byte-identical on 3.50.1, and so is every other golden, on a host that is not
+the `ubuntu-latest` runner they were made on. So a golden that fails in a local
+run is a difference to look at, and `flutter test test_goldens --update-goldens`
+in the same work directory is now the route to regenerate one, in place of the
+throwaway CI step the earlier moves used.
 
 Two consequences of the pin needed handling in the same change, and both are
 maintenance the next Flutter bump inherits:
